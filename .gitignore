@@ -1,12 +1,7 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
 dist/
 build/
-.venv/
+*.egg-info/
+__pycache__/
+*.pyc
 .env
-*.db
-*.sqlite3
-kuzu_data/
-.pytest_cache/
-.DS_Store
+.venv/
