@@ -212,3 +212,23 @@ def test_distill_records_llm_failure_without_crashing(mem, monkeypatch):
     assert report["atoms"] == 0
     assert len(report["errors"]) == 1
     assert report["errors"][0]["session"] == "sess-9"
+
+
+# -- in_memory() constructor: the README quickstart path ----------------------
+
+
+def test_in_memory_constructor_is_zero_dependency():
+    mem = Memory.in_memory(embedder=HashEmbedder())
+    mem.remember(
+        "Playwright installed as an agent-testing dependency",
+        category=Category.fact,
+        provenance=Provenance.explicit_statement,
+        task_id="playwright-test",
+    )
+    # unscoped recall must not leak the task-scoped atom
+    assert all("Playwright" not in h["content"] for h in mem.recall("testing setup"))
+    # scoped recall sees it
+    assert any(
+        "Playwright" in h["content"]
+        for h in mem.recall("testing setup", task_id="playwright-test")
+    )

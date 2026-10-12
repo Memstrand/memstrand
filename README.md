@@ -1,10 +1,51 @@
 # memstrand
 
+[![PyPI](https://img.shields.io/pypi/v/memstrand)](https://pypi.org/project/memstrand/)
+[![Python](https://img.shields.io/pypi/pyversions/memstrand)](https://pypi.org/project/memstrand/)
+[![License: MIT](https://img.shields.io/github/license/chiranjeevirajukr/memstrand)](LICENSE)
+
 **Local-first typed memory for AI agents. Zero API keys.**
 
 Two strands, like DNA: one strand holds **facts** (vectors), the other holds **relationships** (graph). Every write joins them base-pair by base-pair — a memory is never stored without its connections, and never retrieved without its scope.
 
-`pip install memstrand` → `remember()` → `recall()` → done. Everything runs on your machine: no cloud, no keys, no telemetry.
+## 30-second demo
+
+No Docker. No server. No LLM. `pip install` is the entire setup:
+
+```python
+from memstrand import Category, Memory, Provenance
+
+mem = Memory.in_memory()
+
+# A fact scoped to one task...
+mem.remember(
+    "Playwright installed as an agent-testing task dependency",
+    category=Category.fact,
+    provenance=Provenance.explicit_statement,
+    task_id="playwright-test",
+)
+
+# ...and a global preference
+mem.remember(
+    "Chiran prefers a natural, unstylized look in AI portraits",
+    category=Category.preference,
+    provenance=Provenance.explicit_statement,
+    confidence=0.95,
+)
+
+# An unrelated session asks about testing setup.
+# The Playwright fact does NOT leak across the task boundary:
+for hit in mem.recall("testing setup"):
+    print(hit["category"], "-", hit["content"])
+# preference - Chiran prefers a natural, unstylized look in AI portraits
+
+# Same query WITH the task scope sees it:
+for hit in mem.recall("testing setup", task_id="playwright-test"):
+    print(hit["category"], "-", hit["content"])
+# fact - Playwright installed as an agent-testing task dependency
+```
+
+Typed. Scoped. Provenance on every atom. The hot path (`remember`/`recall`) never touches an LLM — embeddings are local ONNX, the graph is embedded Kuzu, sessions are SQLite.
 
 ## Why
 
@@ -16,29 +57,23 @@ Flat vector memory has three failure modes, and every agent hits all three:
 
 memstrand fixes all three: every memory is **typed** (13 categories), **scoped** (session/task/host), and **carries provenance** (how it was learned, confidence, expiry).
 
-## Quickstart
+## Persistent setup
+
+`in_memory()` is ephemeral — data dies with the process. For real use:
 
 ```bash
 docker compose up -d          # Qdrant (vectors); Kuzu + SQLite are embedded, zero setup
 pip install memstrand
-
-export MEMSTRAND_LLM_BASE_URL=http://localhost:8081/v1   # any OpenAI-compatible local endpoint
 ```
 
 ```python
-from memstrand import Memory, Category
+mem = Memory()  # Docker Qdrant + on-disk Kuzu/SQLite
+```
 
-mem = Memory()
+For the session-distillation pass (`mem.improve()`), point at any OpenAI-compatible local endpoint:
 
-mem.remember(
-    "Chiran prefers a natural, unstylized look in AI portraits",
-    category=Category.preference,
-    provenance="explicit_statement",
-    confidence=0.95,
-)
-
-for hit in mem.recall("what do I know about portrait preferences?"):
-    print(hit.content, hit.score)
+```bash
+export MEMSTRAND_LLM_BASE_URL=http://localhost:8081/v1
 ```
 
 ## Architecture
@@ -61,12 +96,22 @@ Seven layers, deterministic write routing, scoped retrieval:
 
 **Memory dynamics** (stolen fair and square, see below): per-fact FSRS strength with a review queue, Hebbian edge weights (use strengthens, disuse decays), and replay consolidation that prunes weak *edges* but never *facts*.
 
+## How it compares
+
+| | memstrand | Mem0 | Cognee | raw vector RAG |
+|---|---|---|---|---|
+| Local-first, no API keys | ✅ | OSS self-host option | ✅ | ✅ |
+| Typed memory schema | ✅ 13 categories | ✅ notes | ✅ ontology | ❌ |
+| Scope enforcement (hard filter) | ✅ | ❌ | ❌ | ❌ |
+| Graph + vector joint writes | ✅ | ✅ | ✅ | ❌ |
+| Contradictions as edges, not deletes | ✅ | ❌ | ✅ | ❌ |
+
 ## API
 
 ```python
 mem.remember(content, category=..., provenance=..., confidence=..., ttl_days=...)
 mem.recall(query, session_id=..., task_id=..., limit=...)   # scope-aware
-mem.improve(session_ids=[...])    # distill sessions → permanent memory
+mem.improve(session_ids=[...])    # distill sessions → permanent memory (needs local LLM)
 mem.forget(memory_id)             # provenance-chain cleanup, never silent
 mem.grounded_answer(question)     # answer ONLY from stored memories
 ```

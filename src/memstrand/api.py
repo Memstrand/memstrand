@@ -44,6 +44,28 @@ class Memory:
         )
         self.llm_model = llm_model or os.environ.get("MEMSTRAND_LLM_MODEL", "local")
 
+    @classmethod
+    def in_memory(cls, **kwargs) -> "Memory":
+        """Zero-dependency memory for demos and tests: Qdrant runs in
+        `:memory:` mode, Kuzu + SQLite live in a temp dir. `pip install
+        memstrand` is the entire setup — no Docker, no server, no LLM.
+
+        Data is ephemeral (it dies with the process). For persistence, use
+        the default constructor: Docker Qdrant + on-disk Kuzu/SQLite, with an
+        optional local LLM endpoint for the `improve()` distillation pass.
+        """
+        import tempfile
+
+        from qdrant_client import QdrantClient
+
+        tmp = tempfile.mkdtemp(prefix="memstrand-")
+        return cls(
+            vector_store=QdrantVectorStore(client=QdrantClient(":memory:")),
+            graph_store=KuzuGraphStore(path=f"{tmp}/kuzu"),
+            session_store=SqliteSessionStore(path=f"{tmp}/memstrand.db"),
+            **kwargs,
+        )
+
     def _embed(self, text: str) -> list[float]:
         return next(iter(self.embedder.embed([text])))
 
