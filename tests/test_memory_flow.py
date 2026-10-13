@@ -232,3 +232,26 @@ def test_in_memory_constructor_is_zero_dependency():
         "Playwright" in h["content"]
         for h in mem.recall("testing setup", task_id="playwright-test")
     )
+
+
+# -- categories filter: 0.1.3 regression (MatchValue vs MatchAny) ---------------
+
+
+def test_recall_with_categories_filter_does_not_crash(mem):
+    mem.remember(
+        "cognita-brain runs Qwen3.8-27B on port 8081",
+        category=Category.fact,
+        provenance=Provenance.explicit_statement,
+    )
+    mem.remember(
+        "store.py was swapped to memstrand",
+        category=Category.event,
+        provenance=Provenance.explicit_statement,
+    )
+    # single-category filter: no crash, only the fact atom matches
+    facts = mem.recall("cognita", categories=[Category.fact])
+    assert facts, "expected the fact atom back"
+    assert all(h["category"] == "fact" for h in facts)
+    # multi-category filter: no crash, both atoms visible
+    both = mem.recall("cognita", categories=[Category.fact, Category.event])
+    assert {"fact", "event"} <= {h["category"] for h in both}

@@ -19,6 +19,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -75,7 +76,10 @@ class QdrantVectorStore:
             must.append(
                 FieldCondition(
                     key="category",
-                    match=MatchValue(value=[c.value for c in query.categories]),
+                    # categories is a list: MatchValue only accepts a scalar
+                    # (passing a list raises a pydantic ValidationError),
+                    # so multi-category queries need MatchAny.
+                    match=MatchAny(any=[c.value for c in query.categories]),
                 )
             )
         return Filter(must=must) if must else None
