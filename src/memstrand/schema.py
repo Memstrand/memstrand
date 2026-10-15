@@ -83,6 +83,11 @@ class MemoryAtom(BaseModel):
     fsrs_stability_days: float = 30.0
     fsrs_next_review: datetime | None = None
 
+    # provenance origin: where this memory came from, not why it was learned
+    source: str | None = None        # absolute file path, URL, "claude-code", etc.
+    source_ref: str | None = None    # locator within source, e.g. "notes/x.md#Heading [2]"
+    last_accessed_at: datetime | None = None
+
 
 class MemoryEdge(BaseModel):
     """One typed relationship between two atoms."""

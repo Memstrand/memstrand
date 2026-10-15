@@ -193,13 +193,18 @@ def test_distill_end_to_end_and_idempotent(mem, monkeypatch):
     hits = mem.recall("dark mode", task_id="prefs")
     assert len(hits) == 1
     assert hits[0]["provenance"] == "explicit_statement"
-    # unscoped query must not see the task-scoped distilled atom
-    assert mem.recall("dark mode") == []
+    # v0.2 scope routing: durable preferences about the user are "global"
+    # by default (the fake LLM response above omits "scope" entirely, so
+    # Category.preference falls back to global) -- unscoped recall SHOULD
+    # see it now. This intentionally flips the pre-v0.2 no-leak assertion.
+    assert mem.recall("dark mode") != []
 
-    # re-run: content-hash dedup makes it a safe no-op
+    # re-run: v0.2 distillation is incremental (only turns after the last
+    # distilled turn id are fetched). No new turns were appended, so this
+    # is a true no-op -- zero turns fetched, no LLM call, nothing to dedup.
     report2 = mem.improve(["sess-1"])
     assert report2["atoms"] == 0
-    assert report2["skipped_dedup"] == 1
+    assert report2["skipped_dedup"] == 0
 
 
 def test_distill_records_llm_failure_without_crashing(mem, monkeypatch):

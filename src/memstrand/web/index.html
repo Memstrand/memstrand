@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>memstrand</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #6b7280;
+    --border: #e2e2e5;
+    --surface: #f7f7f9;
+    --surface-2: #eceef1;
+    --accent: #2563eb;
+    --accent-fg: #ffffff;
+    --danger: #dc2626;
+    --danger-fg: #ffffff;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121214;
+      --fg: #e9e9ec;
+      --muted: #9a9aa2;
+      --border: #333338;
+      --surface: #1b1b1e;
+      --surface-2: #26262a;
+      --accent: #60a5fa;
+      --accent-fg: #0b1220;
+      --danger: #f87171;
+      --danger-fg: #2a0b0b;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.45;
+  }
+  a { color: var(--accent); }
+  #banner {
+    background: var(--danger);
+    color: var(--danger-fg);
+    padding: 0.5rem 1rem;
+    text-align: center;
+    font-size: 0.9rem;
+    position: sticky; top: 0; z-index: 50;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 1rem 1.25rem 0.5rem;
+    flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 1.4rem; }
+  header .sub { color: var(--muted); font-size: 0.9rem; }
+  nav.tabs {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0 1.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+  nav.tabs button {
+    background: none;
+    border: none;
+    padding: 0.6rem 1rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+    color: var(--muted);
+    border-bottom: 2px solid transparent;
+  }
+  nav.tabs button.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+  main { padding: 1rem 1.25rem 3rem; max-width: 900px; margin: 0 auto; }
+  .tab[hidden] { display: none; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.9rem 1rem;
+    margin-bottom: 1rem;
+  }
+  details.panel summary { cursor: pointer; font-weight: 600; }
+  details.panel[open] summary { margin-bottom: 0.6rem; }
+  .row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 0.6rem; }
+  .filters label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--muted); gap: 0.2rem; }
+  .filters .checkbox { flex-direction: row; align-items: center; gap: 0.4rem; }
+  input[type=text], input[type=number], input[type=search], select, textarea {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.55rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+  }
+  textarea { width: 100%; resize: vertical; }
+  #search-query { flex: 1; min-width: 180px; }
+  button {
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--fg);
+    border-radius: 6px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.9rem;
+  }
+  button.primary, #search-form button[type=submit], #ask-form button[type=submit] {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+  }
+  button.danger { background: var(--danger); color: var(--danger-fg); border-color: var(--danger); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
+  .chip {
+    border-radius: 999px;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.8rem;
+    background: var(--surface-2);
+  }
+  .chip.active { background: var(--chip-color, var(--accent)); color: #fff; border-color: transparent; }
+  .results { display: flex; flex-direction: column; gap: 0.6rem; }
+  .card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.7rem 0.9rem;
+    background: var(--bg);
+    cursor: pointer;
+  }
+  .card:hover, .card:focus { border-color: var(--accent); outline: none; }
+  .card.superseded { opacity: 0.55; }
+  .card.superseded .content { text-decoration: line-through; }
+  .card-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; }
+  .badge {
+    display: inline-block;
+    color: #fff;
+    border-radius: 5px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+  }
+  .muted { color: var(--muted); font-size: 0.8rem; }
+  .score { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+  p.content { margin: 0.25rem 0 0.5rem; word-break: break-word; }
+  .meta { display: flex; flex-wrap: wrap; gap: 0.75rem; font-size: 0.78rem; color: var(--muted); }
+  .meta-item b { color: var(--fg); font-weight: 600; }
+  .contradiction {
+    margin-top: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: color-mix(in srgb, var(--danger) 12%, var(--bg));
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    font-size: 0.8rem;
+  }
+  .contra-item { margin-top: 0.15rem; color: var(--muted); }
+  .empty { color: var(--muted); font-style: italic; }
+  .error-box {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, var(--bg));
+    border: 1px solid var(--danger);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.85rem;
+  }
+  .answer-box {
+    margin-top: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--surface-2);
+    border-radius: 6px;
+    white-space: pre-wrap;
+  }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 0.5rem; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.2rem; }
+  #add-status { margin-top: 0.5rem; font-size: 0.85rem; }
+  .pager { display: flex; align-items: center; justify-content: center; gap: 1rem; margin-top: 1rem; }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 60;
+  }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(480px, 100%);
+    background: var(--bg);
+    border-left: 1px solid var(--border);
+    z-index: 61;
+    overflow-y: auto;
+    padding: 1rem 1.25rem 2rem;
+  }
+  .close-btn {
+    position: absolute; top: 0.6rem; right: 0.8rem;
+    background: none; border: none; font-size: 1.4rem; line-height: 1; color: var(--muted);
+  }
+  .drawer h2 { margin: 0 0.5rem 0.5rem 0; font-size: 1.05rem; word-break: break-all; }
+  .drawer-section { margin-top: 1rem; }
+  .drawer-section h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 0.4rem; }
+  .neighbor-row, .history-row {
+    display: flex; gap: 0.5rem; align-items: baseline;
+    padding: 0.35rem 0; border-bottom: 1px solid var(--border);
+    font-size: 0.83rem; width: 100%; text-align: left;
+    background: none; border-left: none; border-right: none; border-top: none; border-radius: 0;
+    color: var(--fg);
+  }
+  button.neighbor-row { cursor: pointer; }
+  .neighbor-row:hover { color: var(--accent); }
+  .rel-type { color: var(--muted); font-weight: 600; min-width: 80px; }
+  .rel-content { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hist-ts { color: var(--muted); min-width: 140px; }
+  .hist-action { font-weight: 600; min-width: 70px; }
+  .bars { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
+  .bar-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.82rem; }
+  .bar-label { width: 110px; flex-shrink: 0; color: var(--muted); }
+  .bar-track { flex: 1; background: var(--surface-2); border-radius: 4px; overflow: hidden; height: 14px; }
+  .bar-fill { height: 100%; background: var(--accent); }
+  .bar-count { width: 36px; text-align: right; color: var(--muted); }
+  .stats-summary { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: 0.85rem; color: var(--muted); }
+  .stats-summary b { color: var(--fg); }
+  #report-out { white-space: pre-wrap; font-size: 0.8rem; max-height: 300px; overflow: auto; background: var(--surface-2); padding: 0.6rem; border-radius: 6px; }
+  @media (max-width: 700px) {
+    .form-grid { grid-template-columns: 1fr; }
+    header { flex-direction: column; align-items: flex-start; gap: 0.2rem; }
+    .drawer { width: 100%; }
+    .bar-label { width: 80px; font-size: 0.75rem; }
+  }
+</style>
+</head>
+<body>
+  <div id="banner" hidden></div>
+  <header>
+    <h1>memstrand</h1>
+    <span class="sub" id="app-version">v…</span>
+    <span class="sub" id="atom-count"></span>
+    <button id="settings-btn" type="button" title="Set daemon token" aria-label="Settings" style="margin-left:auto;">⚙</button>
+  </header>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="search">Search</button>
+    <button class="tab-btn" data-tab="browse">Browse</button>
+    <button class="tab-btn" data-tab="maint">Maintenance</button>
+  </nav>
+  <main>
+    <section id="tab-search" class="tab">
+      <form id="search-form" class="panel">
+        <div class="row">
+          <input id="search-query" type="search" placeholder="Search memory (semantic recall)…" autocomplete="off">
+          <button type="submit">Search</button>
+        </div>
+        <div class="row filters">
+          <label>Task scope
+            <input id="search-task" type="text" placeholder="(blank = global only)">
+          </label>
+          <label class="checkbox">
+            <input id="search-superseded" type="checkbox"> include superseded
+          </label>
+        </div>
+        <div id="search-categories" class="chips"></div>
+      </form>
+      <div id="search-results" class="results"></div>
+
+      <details class="panel">
+        <summary>Ask (grounded answer)</summary>
+        <form id="ask-form" class="row">
+          <input id="ask-question" type="text" placeholder="Ask a question, answered only from memory…" style="flex:1;min-width:200px;">
+          <input id="ask-task" type="text" placeholder="task scope (optional)" style="width:160px;">
+          <button type="submit">Ask</button>
+        </form>
+        <div id="ask-answer" class="answer-box" hidden></div>
+      </details>
+
+      <details class="panel">
+        <summary>Add memory</summary>
+        <form id="add-form" class="form-grid">
+          <label class="full">Content
+            <textarea id="add-content" rows="3" required></textarea>
+          </label>
+          <label>Category
+            <select id="add-category"></select>
+          </label>
+          <label>Provenance
+            <select id="add-provenance"></select>
+          </label>
+          <label>Confidence
+            <input id="add-confidence" type="number" min="0" max="1" step="0.05" placeholder="0.7">
+          </label>
+          <label>TTL (days)
+            <input id="add-ttl" type="number" min="0" step="1" placeholder="(permanent)">
+          </label>
+          <label>Task ID
+            <input id="add-task" type="text" placeholder="(blank = global)">
+          </label>
+          <label>Host
+            <input id="add-host" type="text" placeholder="(optional)">
+          </label>
+          <label class="full">Source
+            <input id="add-source" type="text" placeholder="(optional)">
+          </label>
+          <div class="full"><button type="submit" class="primary">Remember</button></div>
+        </form>
+        <div id="add-status"></div>
+      </details>
+    </section>
+
+    <section id="tab-browse" class="tab" hidden>
+      <div class="panel row filters">
+        <label>Category
+          <select id="browse-category"></select>
+        </label>
+        <label>Task scope
+          <select id="browse-task-mode">
+            <option value="all">All tasks</option>
+            <option value="global">Global only</option>
+            <option value="specific">Specific task…</option>
+          </select>
+        </label>
+        <label id="browse-task-wrap" hidden>Task ID
+          <input id="browse-task-id" type="text" placeholder="task id">
+        </label>
+        <label>Host
+          <input id="browse-host" type="text" placeholder="(optional)">
+        </label>
+        <div><button id="browse-apply">Apply</button></div>
+      </div>
+      <div id="browse-list" class="results"></div>
+      <div class="pager">
+        <button id="browse-prev">◀ Prev</button>
+        <span id="browse-pageinfo" class="muted"></span>
+        <button id="browse-next">Next ▶</button>
+      </div>
+    </section>
+
+    <section id="tab-maint" class="tab" hidden>
+      <div class="panel">
+        <h3 style="margin-top:0">Stats</h3>
+        <div id="stats-summary" class="stats-summary"></div>
+        <div id="stats-bars" class="bars"></div>
+      </div>
+      <div class="panel row">
+        <button id="btn-improve">Improve (background)</button>
+        <button id="btn-consolidate">Consolidate</button>
+      </div>
+      <div class="panel row">
+        <input id="ingest-path" type="text" placeholder="Path to ingest (file or dir)" style="flex:1;min-width:200px;">
+        <input id="ingest-task" type="text" placeholder="task_id (optional)" style="width:160px;">
+        <button id="btn-ingest">Ingest</button>
+      </div>
+      <div class="panel row">
+        <button id="btn-export-jsonl">Export JSONL</button>
+        <button id="btn-export-md">Export Markdown</button>
+      </div>
+      <details class="panel" id="report-panel" hidden>
+        <summary>Last report</summary>
+        <pre id="report-out"></pre>
+      </details>
+    </section>
+  </main>
+
+  <div id="overlay" class="overlay" hidden></div>
+  <aside id="drawer" class="drawer" hidden aria-hidden="true">
+    <button id="drawer-close" class="close-btn" aria-label="Close">×</button>
+    <div id="drawer-content"></div>
+  </aside>
+
+<script>
+(function () {
+  "use strict";
+
+  const CATEGORIES = ["instruction","fact","decision","goal","commitment","preference",
+    "relationship","context","event","learning","observation","artifact","error"];
+  const PROVENANCE = ["explicit_statement","inferred","corrected","validated","observed","imported"];
+  const CATEGORY_COLORS = {
+    instruction: "#2563eb", fact: "#059669", decision: "#7c3aed", goal: "#d97706",
+    commitment: "#db2777", preference: "#0891b2", relationship: "#65a30d", context: "#64748b",
+    event: "#ca8a04", learning: "#4f46e5", observation: "#0d9488", artifact: "#9333ea", error: "#dc2626"
+  };
+
+  const $ = (sel) => document.querySelector(sel);
+
+  // ---------- DOM helper (no innerHTML with untrusted data; textContent only) ----------
+  function el(tag, attrs, ...children) {
+    const e = document.createElement(tag);
+    if (attrs) {
+      for (const [k, v] of Object.entries(attrs)) {
+        if (v === null || v === undefined) continue;
+        if (k === "class") e.className = v;
+        else if (k === "text") e.textContent = v;
+        else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
+        else e.setAttribute(k, v);
+      }
+    }
+    for (const c of children.flat(Infinity)) {
+      if (c === null || c === undefined) continue;
+      e.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c);
+    }
+    return e;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  // ---------- auth token (loopback daemons can still require a bearer token) ----------
+  const TOKEN_KEY = "memstrand.token";
+  function getToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
+  }
+  function setToken(t) {
+    try {
+      if (t) localStorage.setItem(TOKEN_KEY, t);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (e) { /* localStorage unavailable (private mode, etc.) — fail quietly */ }
+  }
+  function authHeaders() {
+    const t = getToken();
+    return t ? { "Authorization": "Bearer " + t } : {};
+  }
+  let promptingForToken = false;
+  function promptForToken(message) {
+    // Guard against re-entrant prompt() calls (e.g. two in-flight requests
+    // both getting a 401 at once) — only one blocking prompt at a time.
+    if (promptingForToken) return false;
+    promptingForToken = true;
+    try {
+      const t = window.prompt(message, getToken());
+      if (t === null) return false;
+      setToken(t.trim());
+      return true;
+    } finally {
+      promptingForToken = false;
+    }
+  }
+  $("#settings-btn").addEventListener("click", () => {
+    promptForToken("memstrand daemon token (leave blank to clear):");
+  });
+
+  // ---------- API ----------
+  async function api(path, opts, _retried) {
+    let res;
+    const headers = Object.assign({ "Content-Type": "application/json" }, authHeaders(), (opts && opts.headers) || {});
+    try {
+      res = await fetch(path, Object.assign({}, opts || {}, { headers: headers }));
+    } catch (err) {
+      setConnError(true);
+      throw new Error("Cannot reach memstrand daemon");
+    }
+    if (res.status === 401 && !_retried && promptForToken("memstrand daemon requires a token. Enter it:")) {
+      return api(path, opts, true);
+    }
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* no body */ }
+    if (!res.ok) {
+      const msg = (body && body.error) || ("HTTP " + res.status);
+      throw new Error(msg);
+    }
+    setConnError(false);
+    return body;
+  }
+  async function apiText(path, _retried) {
+    let res;
+    try { res = await fetch(path, { headers: authHeaders() }); } catch (e) { setConnError(true); throw new Error("Cannot reach memstrand daemon"); }
+    if (res.status === 401 && !_retried && promptForToken("memstrand daemon requires a token. Enter it:")) {
+      return apiText(path, true);
+    }
+    if (!res.ok) {
+      let msg = "HTTP " + res.status;
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      throw new Error(msg);
+    }
+    setConnError(false);
+    return res.text();
+  }
+
+  function setConnError(isError) {
+    const banner = $("#banner");
+    if (isError) {
+      banner.textContent = "Cannot reach memstrand daemon at 127.0.0.1:7777 — retrying…";
+      banner.hidden = false;
+    } else {
+      banner.hidden = true;
+    }
+  }
+
+  // ---------- formatting ----------
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
+  }
+  function fmtNum(n, digits) {
+    return (typeof n === "number") ? n.toFixed(digits) : "—";
+  }
+  function categoryBadge(cat) {
+    const span = el("span", { class: "badge", text: cat || "unknown" });
+    span.style.background = CATEGORY_COLORS[cat] || "#6b7280";
+    return span;
+  }
+  function metaItem(label, value) {
+    return el("span", { class: "meta-item" }, el("b", { text: label + ": " }), (value === null || value === undefined || value === "") ? "—" : String(value));
+  }
+  function buildSelect(id, options, selected) {
+    const sel = document.getElementById(id) || document.createElement("select");
+    clear(sel);
+    for (const o of options) {
+      const opt = el("option", { value: o, text: o });
+      if (o === selected) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+
+  // ---------- memory card (shared by search results + browse list) ----------
+  function memoryCard(item, isHit) {
+    const card = el("div", {
+      class: "card" + (item.superseded ? " superseded" : ""),
+      tabindex: "0", role: "button",
+      onclick: () => openDrawer(item.id),
+      onkeydown: (e) => { if (e.key === "Enter") openDrawer(item.id); }
+    });
+    const scoreParts = [];
+    if (isHit) {
+      if (typeof item.score === "number") scoreParts.push("score " + item.score.toFixed(3));
+      if (typeof item.similarity === "number") scoreParts.push("sim " + item.similarity.toFixed(3));
+      if (item.keyword) scoreParts.push("keyword");
+    } else {
+      scoreParts.push(fmtDate(item.created_at));
+    }
+    card.appendChild(el("div", { class: "card-top" }, categoryBadge(item.category), el("span", { class: "score", text: scoreParts.join(" · ") })));
+    card.appendChild(el("p", { class: "content", text: item.content }));
+    const meta = el("div", { class: "meta" });
+    meta.appendChild(metaItem("provenance", item.provenance));
+    meta.appendChild(metaItem("confidence", typeof item.confidence === "number" ? item.confidence.toFixed(2) : item.confidence));
+    meta.appendChild(metaItem("scope", item.task_id || "global"));
+    if (item.source) meta.appendChild(metaItem("source", item.source + (item.source_ref ? (" (" + item.source_ref + ")") : "")));
+    if (item.superseded) meta.appendChild(el("span", { class: "meta-item", text: "superseded" }));
+    card.appendChild(meta);
+    if (isHit && Array.isArray(item.contradictions) && item.contradictions.length) {
+      const warn = el("div", { class: "contradiction" }, "⚠ contradicts:");
+      for (const c of item.contradictions) {
+        const text = (c && typeof c === "object") ? (c.content || JSON.stringify(c)) : String(c);
+        warn.appendChild(el("div", { class: "contra-item", text: text }));
+      }
+      card.appendChild(warn);
+    }
+    return card;
+  }
+
+  function renderError(container, err) {
+    clear(container);
+    container.appendChild(el("div", { class: "error-box", text: err && err.message ? err.message : String(err) }));
+  }
+
+  // ---------- health / header ----------
+  async function loadHealth() {
+    try {
+      const h = await api("/api/health");
+      $("#app-version").textContent = "v" + h.version;
+      $("#atom-count").textContent = h.atoms + " atoms";
+    } catch (e) { /* banner already shown by api() */ }
+  }
+
+  // ---------- tabs ----------
+  const TABS = ["search", "browse", "maint"];
+  function showTab(name) {
+    for (const t of TABS) $("#tab-" + t).hidden = (t !== name);
+    for (const btn of document.querySelectorAll(".tab-btn")) btn.classList.toggle("active", btn.dataset.tab === name);
+    if (name === "maint") loadStats();
+    if (name === "browse") loadBrowse();
+  }
+  for (const btn of document.querySelectorAll(".tab-btn")) {
+    btn.addEventListener("click", () => showTab(btn.dataset.tab));
+  }
+
+  // ---------- search ----------
+  const state = { searchCategories: new Set(), lastSearchPayload: null,
+    browse: { offset: 0, limit: 20, category: "", taskMode: "all", taskId: "", host: "", total: 0 } };
+
+  function buildCategoryChips() {
+    const wrap = $("#search-categories");
+    clear(wrap);
+    for (const c of CATEGORIES) {
+      const chip = el("button", { type: "button", class: "chip", text: c });
+      chip.style.setProperty("--chip-color", CATEGORY_COLORS[c] || "#6b7280");
+      chip.addEventListener("click", () => {
+        if (state.searchCategories.has(c)) { state.searchCategories.delete(c); chip.classList.remove("active"); }
+        else { state.searchCategories.add(c); chip.classList.add("active"); }
+      });
+      wrap.appendChild(chip);
+    }
+  }
+
+  async function runSearch() {
+    const query = $("#search-query").value.trim();
+    if (!query) return;
+    const payload = { query, limit: 25, include_superseded: $("#search-superseded").checked };
+    const task = $("#search-task").value.trim();
+    if (task) payload.task_id = task;
+    if (state.searchCategories.size) payload.categories = Array.from(state.searchCategories);
+    state.lastSearchPayload = payload;
+    const container = $("#search-results");
+    try {
+      const data = await api("/api/recall", { method: "POST", body: JSON.stringify(payload) });
+      renderSearchResults(data.results || []);
+    } catch (err) { renderError(container, err); }
+  }
+  function renderSearchResults(results) {
+    const container = $("#search-results");
+    clear(container);
+    if (!results.length) { container.appendChild(el("p", { class: "empty", text: "No results." })); return; }
+    for (const hit of results) container.appendChild(memoryCard(hit, true));
+  }
+  $("#search-form").addEventListener("submit", (e) => { e.preventDefault(); runSearch(); });
+
+  // ---------- ask ----------
+  $("#ask-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const question = $("#ask-question").value.trim();
+    if (!question) return;
+    const payload = { question };
+    const task = $("#ask-task").value.trim();
+    if (task) payload.task_id = task;
+    const box = $("#ask-answer");
+    box.hidden = false;
+    box.textContent = "Thinking…";
+    try {
+      const data = await api("/api/answer", { method: "POST", body: JSON.stringify(payload) });
+      box.textContent = data.answer || "(no answer)";
+    } catch (err) { box.textContent = "Error: " + err.message; }
+  });
+
+  // ---------- add memory ----------
+  buildSelect("add-category", CATEGORIES);
+  buildSelect("add-provenance", PROVENANCE, "explicit_statement");
+  $("#add-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const content = $("#add-content").value.trim();
+    if (!content) return;
+    const payload = { content, category: $("#add-category").value, provenance: $("#add-provenance").value };
+    const conf = $("#add-confidence").value; if (conf !== "") payload.confidence = parseFloat(conf);
+    const ttl = $("#add-ttl").value; if (ttl !== "") payload.ttl_days = parseFloat(ttl);
+    const task = $("#add-task").value.trim(); if (task) payload.task_id = task;
+    const host = $("#add-host").value.trim(); if (host) payload.host = host;
+    const source = $("#add-source").value.trim(); if (source) payload.source = source;
+    const status = $("#add-status");
+    try {
+      const atom = await api("/api/remember", { method: "POST", body: JSON.stringify(payload) });
+      status.textContent = "Saved as " + atom.id;
+      status.style.color = "";
+      e.target.reset();
+    } catch (err) {
+      status.textContent = "Error: " + err.message;
+      status.style.color = "var(--danger)";
+    }
+  });
+
+  // ---------- browse ----------
+  buildSelect("browse-category", [""].concat(CATEGORIES));
+  // relabel the blank option
+  $("#browse-category").firstChild.textContent = "All categories";
+
+  $("#browse-task-mode").addEventListener("change", () => {
+    $("#browse-task-wrap").hidden = $("#browse-task-mode").value !== "specific";
+  });
+  $("#browse-apply").addEventListener("click", () => {
+    state.browse.category = $("#browse-category").value;
+    state.browse.taskMode = $("#browse-task-mode").value;
+    state.browse.taskId = $("#browse-task-id").value.trim();
+    state.browse.host = $("#browse-host").value.trim();
+    state.browse.offset = 0;
+    loadBrowse();
+  });
+  $("#browse-prev").addEventListener("click", () => {
+    state.browse.offset = Math.max(0, state.browse.offset - state.browse.limit);
+    loadBrowse();
+  });
+  $("#browse-next").addEventListener("click", () => {
+    state.browse.offset += state.browse.limit;
+    loadBrowse();
+  });
+
+  async function loadBrowse() {
+    const b = state.browse;
+    const params = new URLSearchParams();
+    if (b.category) params.set("category", b.category);
+    if (b.taskMode === "global") params.set("task_id", "");
+    else if (b.taskMode === "specific" && b.taskId) params.set("task_id", b.taskId);
+    if (b.host) params.set("host", b.host);
+    params.set("limit", String(b.limit));
+    params.set("offset", String(b.offset));
+    const container = $("#browse-list");
+    try {
+      const data = await api("/api/atoms?" + params.toString());
+      b.total = data.total || 0;
+      renderBrowseList(data.atoms || []);
+    } catch (err) { renderError(container, err); }
+  }
+  function renderBrowseList(atoms) {
+    const container = $("#browse-list");
+    clear(container);
+    if (!atoms.length) container.appendChild(el("p", { class: "empty", text: "No memories found." }));
+    for (const atom of atoms) container.appendChild(memoryCard(atom, false));
+    updatePagerInfo();
+  }
+  function updatePagerInfo() {
+    const b = state.browse;
+    const from = b.total === 0 ? 0 : b.offset + 1;
+    const to = Math.min(b.offset + b.limit, b.total);
+    $("#browse-pageinfo").textContent = from + "–" + to + " of " + b.total;
+    $("#browse-prev").disabled = b.offset <= 0;
+    $("#browse-next").disabled = b.offset + b.limit >= b.total;
+  }
+
+  function refreshCurrentView() {
+    const activeBtn = document.querySelector(".tab-btn.active");
+    const name = activeBtn ? activeBtn.dataset.tab : "search";
+    if (name === "browse") loadBrowse();
+    else if (name === "search" && state.lastSearchPayload) runSearch();
+  }
+
+  // ---------- drawer ----------
+  function openOverlay() {
+    $("#overlay").hidden = false;
+    $("#drawer").hidden = false;
+    $("#drawer").removeAttribute("aria-hidden");
+  }
+  function closeDrawer() {
+    $("#overlay").hidden = true;
+    $("#drawer").hidden = true;
+    $("#drawer").setAttribute("aria-hidden", "true");
+  }
+  $("#overlay").addEventListener("click", closeDrawer);
+  $("#drawer-close").addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#drawer").hidden) closeDrawer();
+  });
+
+  async function openDrawer(id) {
+    openOverlay();
+    const content = $("#drawer-content");
+    clear(content);
+    content.appendChild(el("p", { class: "muted", text: "Loading…" }));
+    try {
+      const atom = await api("/api/atoms/" + encodeURIComponent(id));
+      renderDrawer(atom);
+    } catch (err) {
+      clear(content);
+      content.appendChild(el("div", { class: "error-box", text: "Failed to load memory: " + err.message }));
+    }
+  }
+
+  function renderDrawer(atom) {
+    const content = $("#drawer-content");
+    clear(content);
+    content.appendChild(el("h2", {}, categoryBadge(atom.category), " ", atom.id));
+    if (atom.superseded) content.appendChild(el("p", { class: "muted", text: "This memory has been superseded." }));
+
+    const fields = el("div", { class: "meta", style: "flex-direction:column;gap:0.3rem;" });
+    fields.appendChild(metaItem("provenance", atom.provenance));
+    fields.appendChild(metaItem("confidence", typeof atom.confidence === "number" ? atom.confidence.toFixed(2) : atom.confidence));
+    fields.appendChild(metaItem("task_id", atom.task_id || "global"));
+    fields.appendChild(metaItem("host", atom.host));
+    fields.appendChild(metaItem("session_id", atom.session_id));
+    if (atom.source) fields.appendChild(metaItem("source", atom.source + (atom.source_ref ? (" (" + atom.source_ref + ")") : "")));
+    fields.appendChild(metaItem("created_at", fmtDate(atom.created_at)));
+    fields.appendChild(metaItem("updated_at", fmtDate(atom.updated_at)));
+    fields.appendChild(metaItem("expires_at", atom.expires_at ? fmtDate(atom.expires_at) : "never"));
+    fields.appendChild(metaItem("access_count", atom.access_count));
+    fields.appendChild(metaItem("last_accessed_at", atom.last_accessed_at ? fmtDate(atom.last_accessed_at) : "—"));
+    content.appendChild(fields);
+
+    const viewSection = el("div", { class: "drawer-section" });
+    viewSection.appendChild(el("h3", { text: "Content" }));
+    const contentView = el("p", { class: "content", text: atom.content });
+    viewSection.appendChild(contentView);
+    const actions = el("div", { class: "row" },
+      el("button", { type: "button", onclick: () => renderEditForm(atom, viewSection), text: "Edit" }),
+      el("button", { type: "button", class: "danger", onclick: () => doForget(atom), text: "Forget" })
+    );
+    viewSection.appendChild(actions);
+    content.appendChild(viewSection);
+
+    if (Array.isArray(atom.neighbors) && atom.neighbors.length) {
+      const sec = el("div", { class: "drawer-section" });
+      sec.appendChild(el("h3", { text: "Neighbors" }));
+      for (const n of atom.neighbors) {
+        sec.appendChild(el("button", { type: "button", class: "neighbor-row", onclick: () => openDrawer(n.id) },
+          el("span", { text: n.direction === "out" ? "→" : "←" }),
+          el("span", { class: "rel-type", text: n.relation }),
+          el("span", { class: "rel-content", text: n.content }),
+          el("span", { class: "muted", text: "w=" + fmtNum(n.weight, 2) })
+        ));
+      }
+      content.appendChild(sec);
+    }
+
+    if (Array.isArray(atom.history) && atom.history.length) {
+      const sec = el("div", { class: "drawer-section" });
+      sec.appendChild(el("h3", { text: "History" }));
+      for (const h of atom.history) {
+        sec.appendChild(el("div", { class: "history-row" },
+          el("span", { class: "hist-ts", text: fmtDate(h.ts) }),
+          el("span", { class: "hist-action", text: h.action }),
+          el("span", { text: h.detail || "" })
+        ));
+      }
+      content.appendChild(sec);
+    }
+  }
+
+  function renderEditForm(atom, section) {
+    clear(section);
+    section.appendChild(el("h3", { text: "Edit" }));
+    const textarea = el("textarea", { rows: "6" });
+    textarea.value = atom.content;
+    const catSelect = document.createElement("select");
+    for (const c of CATEGORIES) {
+      const opt = el("option", { value: c, text: c });
+      if (c === atom.category) opt.selected = true;
+      catSelect.appendChild(opt);
+    }
+    const confInput = el("input", { type: "number", min: "0", max: "1", step: "0.05" });
+    confInput.value = atom.confidence;
+    const saveBtn = el("button", { type: "button", class: "primary", text: "Save" });
+    const cancelBtn = el("button", { type: "button", text: "Cancel" });
+    const errBox = el("div", { class: "error-box", style: "display:none;" });
+    saveBtn.addEventListener("click", async () => {
+      const payload = {};
+      if (textarea.value !== atom.content) payload.content = textarea.value;
+      if (catSelect.value !== atom.category) payload.category = catSelect.value;
+      const newConf = parseFloat(confInput.value);
+      if (!isNaN(newConf) && newConf !== atom.confidence) payload.confidence = newConf;
+      if (Object.keys(payload).length === 0) { renderDrawer(atom); return; }
+      try {
+        const updated = await api("/api/atoms/" + encodeURIComponent(atom.id), { method: "PATCH", body: JSON.stringify(payload) });
+        await openDrawer(updated.id);
+        refreshCurrentView();
+      } catch (err) {
+        errBox.textContent = "Save failed: " + err.message;
+        errBox.style.display = "";
+      }
+    });
+    cancelBtn.addEventListener("click", () => renderDrawer(atom));
+    section.appendChild(el("label", { text: "Content" }));
+    section.appendChild(textarea);
+    section.appendChild(el("label", { text: "Category" }));
+    section.appendChild(catSelect);
+    section.appendChild(el("label", { text: "Confidence" }));
+    section.appendChild(confInput);
+    section.appendChild(el("div", { class: "row", style: "margin-top:0.5rem;" }, saveBtn, cancelBtn));
+    section.appendChild(errBox);
+  }
+
+  async function doForget(atom) {
+    if (!confirm("Forget memory " + atom.id + "? This cannot be undone.")) return;
+    try {
+      await api("/api/atoms/" + encodeURIComponent(atom.id), { method: "DELETE" });
+      closeDrawer();
+      refreshCurrentView();
+    } catch (err) {
+      alert("Forget failed: " + err.message);
+    }
+  }
+
+  // ---------- maintenance ----------
+  async function loadStats() {
+    const summary = $("#stats-summary");
+    const bars = $("#stats-bars");
+    try {
+      const s = await api("/api/stats");
+      clear(summary);
+      summary.appendChild(metaItem("atoms", s.atoms));
+      summary.appendChild(metaItem("edges", s.edges));
+      summary.appendChild(metaItem("sessions", s.sessions));
+      summary.appendChild(metaItem("undistilled_sessions", s.undistilled_sessions));
+      clear(bars);
+      const byCat = s.by_category || {};
+      const max = Math.max(1, ...Object.values(byCat));
+      const cats = Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]);
+      for (const cat of cats) {
+        const n = byCat[cat];
+        const row = el("div", { class: "bar-row" },
+          el("span", { class: "bar-label", text: cat }),
+          el("div", { class: "bar-track" }, (() => {
+            const fill = el("div", { class: "bar-fill" });
+            fill.style.width = Math.round((n / max) * 100) + "%";
+            fill.style.background = CATEGORY_COLORS[cat] || "#6b7280";
+            return fill;
+          })()),
+          el("span", { class: "bar-count", text: n })
+        );
+        bars.appendChild(row);
+      }
+      if (!cats.length) bars.appendChild(el("p", { class: "empty", text: "No memories yet." }));
+    } catch (err) {
+      renderError(summary, err);
+      clear(bars);
+    }
+  }
+
+  function showReport(report) {
+    $("#report-panel").hidden = false;
+    $("#report-panel").open = true;
+    $("#report-out").textContent = JSON.stringify(report, null, 2);
+  }
+
+  $("#btn-improve").addEventListener("click", async () => {
+    try { showReport(await api("/api/improve", { method: "POST", body: JSON.stringify({ background: true }) })); }
+    catch (err) { showReport({ error: err.message }); }
+  });
+  $("#btn-consolidate").addEventListener("click", async () => {
+    try { showReport(await api("/api/consolidate", { method: "POST", body: JSON.stringify({}) })); }
+    catch (err) { showReport({ error: err.message }); }
+    loadStats();
+  });
+  $("#btn-ingest").addEventListener("click", async () => {
+    const path = $("#ingest-path").value.trim();
+    if (!path) return;
+    const payload = { path };
+    const task = $("#ingest-task").value.trim();
+    if (task) payload.task_id = task;
+    try { showReport(await api("/api/ingest", { method: "POST", body: JSON.stringify(payload) })); }
+    catch (err) { showReport({ error: err.message }); }
+    loadStats();
+  });
+
+  async function exportData(format) {
+    try {
+      const text = await apiText("/api/export?format=" + encodeURIComponent(format));
+      const blob = new Blob([text], { type: format === "jsonl" ? "application/x-ndjson" : "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = el("a", { href: url, download: "memstrand-export." + (format === "jsonl" ? "jsonl" : "md") });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      showReport({ error: err.message });
+    }
+  }
+  $("#btn-export-jsonl").addEventListener("click", () => exportData("jsonl"));
+  $("#btn-export-md").addEventListener("click", () => exportData("markdown"));
+
+  // ---------- init ----------
+  buildCategoryChips();
+  loadHealth();
+  setInterval(loadHealth, 10000);
+})();
+</script>
+</body>
+</html>

@@ -1,5 +1,15 @@
-# memstrand infra: only Qdrant needs a container.
-# Kuzu (graph) and SQLite (provenance/sessions) are embedded — zero setup.
+# memstrand infra: Qdrant is OPTIONAL. By default memstrand runs Qdrant
+# embedded, on-disk, under $MEMSTRAND_HOME (no Docker needed at all). The
+# graph store (SQLite by default, or Kuzu via `pip install memstrand[kuzu]`)
+# and the session/provenance store are also embedded — zero setup either way.
+#
+# Only bring this up if you specifically want a standalone Qdrant server
+# (e.g. to share one vector store across machines, or to use Qdrant's own
+# tooling). Then point memstrand at it:
+#
+#   docker compose up -d
+#   export MEMSTRAND_QDRANT_URL=http://localhost:6333
+#   memstrand serve
 services:
   qdrant:
     image: qdrant/qdrant:latest
@@ -9,5 +19,26 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
+  # There is no published memstrand container image today — `memstrand serve`
+  # is meant to run as a local process (see README: "Second brain in 5
+  # minutes"). If you containerize it yourself, something like this is the
+  # shape: mount a volume at MEMSTRAND_HOME, point MEMSTRAND_QDRANT_URL at
+  # the `qdrant` service above, and publish port 7777.
+  #
+  # memstrand:
+  #   build: .
+  #   command: memstrand serve --host 0.0.0.0
+  #   environment:
+  #     - MEMSTRAND_HOME=/data
+  #     - MEMSTRAND_QDRANT_URL=http://qdrant:6333
+  #     - MEMSTRAND_TOKEN=${MEMSTRAND_TOKEN:?set a token for non-loopback}
+  #   volumes:
+  #     - memstrand_data:/data
+  #   ports:
+  #     - "7777:7777"
+  #   depends_on:
+  #     - qdrant
+
 volumes:
   qdrant_data:
+  # memstrand_data:

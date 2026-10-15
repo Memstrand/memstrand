@@ -1,3 +1,3 @@
-from .base import GraphStore, SessionStore, VectorStore
+from .base import GraphStore, KeywordIndex, SessionStore, VectorStore
 
-__all__ = ["GraphStore", "SessionStore", "VectorStore"]
+__all__ = ["GraphStore", "KeywordIndex", "SessionStore", "VectorStore"]
