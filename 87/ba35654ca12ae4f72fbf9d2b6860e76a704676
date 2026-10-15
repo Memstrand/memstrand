@@ -1,0 +1,28 @@
+src/memstrand/config.py
+  s_ab0d40eb606e6e::t_b281ccf3972726 41
+README.md
+  s_ab0d40eb606e6e::t_a93238429185da 109
+CHANGELOG.md
+  s_ab0d40eb606e6e::t_5a4ca3df0f5db0 102-106
+  s_ab0d40eb606e6e::t_09f7d268852d65 133-135
+examples/second_brain.md
+  s_ab0d40eb606e6e::t_692ef1ea3490c2 56,59
+tests/test_core_v2.py
+  s_ab0d40eb606e6e::t_2029647264caa3 441-448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "87ba35654ca12ae4f72fbf9d2b6860e76a704676",
+  "prompts": {},
+  "sessions": {
+    "s_ab0d40eb606e6e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d83b50ba-a801-4b3e-9721-3673cfe2a3c4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
