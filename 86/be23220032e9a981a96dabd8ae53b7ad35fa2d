@@ -1,0 +1,90 @@
+CHANGELOG.md
+  s_ea74dd6b31b678::t_94e6541900de57 7-17
+.github/PULL_REQUEST_TEMPLATE.md
+  s_ea74dd6b31b678::t_982ae8bf129c71 1-19
+docs/integrations.md
+  s_ea74dd6b31b678::t_12855c7101bbd0 1-317
+.github/ISSUE_TEMPLATE/feature_request.yml
+  s_ea74dd6b31b678::t_92c9f19a182963 1-38
+CONTRIBUTING.md
+  s_ea74dd6b31b678::t_c0a867cca45a60 1-119
+docs/architecture.md
+  s_ea74dd6b31b678::t_3a553591691c6c 1-22,28-29,32-34,43-142
+  s_ea74dd6b31b678::t_0c040941744b9e 23-27,30-31,35-42
+docs/python-api.md
+  s_ea74dd6b31b678::t_fe5002c5398a80 1-73
+scripts/make_demo.py
+  s_ea74dd6b31b678::t_6824f6e616c9cc 67
+  s_ea74dd6b31b678::t_60180c627bc855 91,96,101,106,111,116
+  s_ea74dd6b31b678::t_8b9ce743b60940 389
+  s_ea74dd6b31b678::t_65565539062b56 490-494
+  s_ea74dd6b31b678::t_928be9c4d1f16b 331-338
+  s_ea74dd6b31b678::t_2e9b945b6234bd 110
+  s_ea74dd6b31b678::t_95eb46b68880c8 502,535
+  s_ea74dd6b31b678::t_1acbfc927ea85c 57
+  s_ea74dd6b31b678::t_8ff94e78bcd48d 1-56,58-66,68-90,92-95,97-100,102-105,107-109,112-115,117-256,261-266,269,272-279,282-330,339-376,383-388,390-489,495-501,503-524,530-534,536-543,553-560,563-564,567-568,570-698
+  s_ea74dd6b31b678::t_86d2554c361a13 280-281
+  s_ea74dd6b31b678::t_39f56a260891c7 257-260
+  s_ea74dd6b31b678::t_936ded7fdc2ac2 267-268,270-271
+  s_ea74dd6b31b678::t_90068e6e835e76 525-529
+  s_ea74dd6b31b678::t_35254c52293d51 561-562
+  s_ea74dd6b31b678::t_3efdf67b949360 377-382
+  s_ea74dd6b31b678::t_e0969fa33af5f6 544-552
+  s_ea74dd6b31b678::t_2c9ffd86071860 565-566,569
+examples/second_brain.md
+  s_ea74dd6b31b678::t_5382afe96fd3b3 3-6
+docs/assets/banner.svg
+  s_ea74dd6b31b678::t_707a6b98bbf3f1 63
+  s_ea74dd6b31b678::t_2f7c46acb26de0 1-3,5-62,64
+  s_ea74dd6b31b678::t_82609d083f79f8 4
+.github/ISSUE_TEMPLATE/bug_report.yml
+  s_ea74dd6b31b678::t_e435716fc88f4b 1-87
+docs/assets/social-preview.svg
+  s_ea74dd6b31b678::t_d29cb17bed4d93 12-13,22,63-64
+  s_ea74dd6b31b678::t_36cceaeb62d8c0 1-11,14-21,23-62,65
+.github/ISSUE_TEMPLATE/config.yml
+  s_ea74dd6b31b678::t_e48a67637f347c 1-8
+docs/cli.md
+  s_ea74dd6b31b678::t_5ba4ed63ce4626 1-110
+tests/test_make_demo.py
+  s_ea74dd6b31b678::t_5332f03ed7536b 1-22,24-108,112-115,117-240
+  s_ea74dd6b31b678::t_ff0d33b5557074 109-111,116
+  s_ea74dd6b31b678::t_f556288f2e34ee 23
+pyproject.toml
+  s_ea74dd6b31b678::t_59bd69738e3eaa 13-42
+  s_ea74dd6b31b678::t_59d0b38245b6f7 67-69
+Makefile
+  s_ea74dd6b31b678::t_cfc22d5ab187db 1-37
+docs/configuration.md
+  s_ea74dd6b31b678::t_a71eb5bbd20c0e 1-42
+.github/dependabot.yml
+  s_ea74dd6b31b678::t_14fd4e583c3b4a 1-11
+SECURITY.md
+  s_ea74dd6b31b678::t_6b0341c586869d 1-54
+README.md
+  s_ea74dd6b31b678::t_78de9e7a25219d 1-3,5,7-12,14-16,18,21-23,26,28-46,81-84,86,89-92,95-96,98,100-109,123-150,153-154,160-176,190-193
+  s_ea74dd6b31b678::t_efc167a8550cdf 17
+  s_ea74dd6b31b678::t_c1e63f922d3bf6 20,24
+CODE_OF_CONDUCT.md
+  s_ea74dd6b31b678::t_d657b03c20778a 1-137
+demo.tape
+  s_ea74dd6b31b678::t_2aed96a512e7c9 1-91
+.github/workflows/ci.yml
+  s_ea74dd6b31b678::t_7f9efba3869012 1-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "86be23220032e9a981a96dabd8ae53b7ad35fa2d",
+  "prompts": {},
+  "sessions": {
+    "s_ea74dd6b31b678": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b784120-b079-413f-84d8-146dae1b14ac",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
