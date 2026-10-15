@@ -1,0 +1,87 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out as much
+        of this as you can — `memstrand config` and `memstrand --version`
+        (or `pip show memstrand`) cover most of the version/config fields.
+
+  - type: input
+    id: version
+    attributes:
+      label: memstrand version
+      description: Output of `pip show memstrand` or the git commit if running from source
+      placeholder: 0.2.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.1 / Ubuntu 24.04 / Windows 11
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`
+      placeholder: 3.12.4
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Graph backend
+      description: MEMSTRAND_GRAPH_BACKEND (run `memstrand config` to check)
+      options:
+        - sqlite (default)
+        - kuzu
+        - not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands run, code snippet, or CLI invocation
+      placeholder: |
+        1. `memstrand serve`
+        2. `memstrand remember "..." --task foo`
+        3. `memstrand recall "..."`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / traceback
+      description: Daemon output, CLI stderr, or a Python traceback. This will be rendered as a code block.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Relevant config (`memstrand config` output, with any secrets/tokens redacted), related issues, etc.

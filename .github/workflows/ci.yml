@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request: {}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # kuzu==0.11.3 (the `kuzu` / `all` extra) is pinned upstream (see
+      # pyproject.toml) and its wheel coverage for 3.13 isn't guaranteed
+      # on every platform yet. Rather than let a missing wheel fail the
+      # whole job, 3.13 installs without the `kuzu` extra; the graph
+      # store tests already `pytest.importorskip("kuzu")`, so they're
+      # skipped (not failed) wherever kuzu isn't installed.
+      - name: Install (with kuzu)
+        if: matrix.python-version != '3.13'
+        run: pip install -e '.[dev,all]'
+
+      - name: Install (no kuzu — see comment above)
+        if: matrix.python-version == '3.13'
+        run: pip install -e '.[dev,pdf]'
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Test
+        run: pytest -q
+
+  build:
+    name: build + twine check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install build twine
+
+      - run: python -m build
+
+      - run: twine check dist/*

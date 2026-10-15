@@ -1,0 +1,65 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="memstrand: local-first memory for AI agents">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1117" />
+      <stop offset="1" stop-color="#161b22" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="640" fill="url(#bg)" />
+
+  <style>
+    .wordmark { font-family: ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; font-weight: 800; font-size: 128px; fill: #f2f5f8; }
+    .tagline { font-family: ui-sans-serif, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; font-weight: 500; font-size: 26px; fill: #9aa7b3; }
+    .strand-a { stroke: #4f93f7; }
+    .strand-b { stroke: #ef8463; }
+    .rung { stroke: #3a4149; }
+    .node-a { fill: #4f93f7; }
+    .node-b { fill: #ef8463; }
+  </style>
+
+  <!-- double helix: two strands (facts + relationships) with base-pair rungs -->
+  <g transform="translate(140, 130)" fill="none" stroke-width="8" stroke-linecap="round">
+    <path class="strand-a" d="M 30 0 C 140 85, 140 130, 30 185 C -80 240, -80 285, 30 370" />
+    <path class="strand-b" d="M 30 0 C -80 85, -80 130, 30 185 C 140 240, 140 285, 30 370" />
+
+    <g class="rung" stroke-width="6">
+      <line x1="-10" y1="22" x2="70" y2="22" />
+      <line x1="-32" y1="62" x2="92" y2="62" />
+      <line x1="-10" y1="102" x2="70" y2="102" />
+      <line x1="20" y1="142" x2="40" y2="142" />
+      <line x1="-10" y1="182" x2="70" y2="182" />
+      <line x1="-32" y1="222" x2="92" y2="222" />
+      <line x1="-10" y1="262" x2="70" y2="262" />
+      <line x1="20" y1="302" x2="40" y2="302" />
+      <line x1="-10" y1="342" x2="70" y2="342" />
+    </g>
+
+    <g class="node-a">
+      <circle cx="30" cy="0" r="11" />
+      <circle cx="89" cy="58" r="11" />
+      <circle cx="30" cy="102" r="11" />
+      <circle cx="-35" cy="160" r="11" />
+      <circle cx="30" cy="182" r="11" />
+      <circle cx="-35" cy="231" r="11" />
+      <circle cx="30" cy="262" r="11" />
+      <circle cx="-22" cy="317" r="11" />
+      <circle cx="30" cy="370" r="11" />
+    </g>
+
+    <g class="node-b">
+      <circle cx="30" cy="0" r="11" />
+      <circle cx="-29" cy="58" r="11" />
+      <circle cx="30" cy="102" r="11" />
+      <circle cx="89" cy="160" r="11" />
+      <circle cx="30" cy="182" r="11" />
+      <circle cx="89" cy="231" r="11" />
+      <circle cx="30" cy="262" r="11" />
+      <circle cx="83" cy="317" r="11" />
+      <circle cx="30" cy="370" r="11" />
+    </g>
+  </g>
+
+  <text x="380" y="350" class="wordmark">memstrand</text>
+  <text x="382" y="405" class="tagline">Local-first memory for AI agents. Typed, scoped, never leaked.</text>
+</svg>

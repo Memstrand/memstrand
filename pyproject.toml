@@ -10,7 +10,36 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "Chiran" }]
-keywords = ["ai", "agents", "memory", "rag", "knowledge-graph", "local-first"]
+keywords = [
+    "ai",
+    "agents",
+    "agent-memory",
+    "memory",
+    "long-term-memory",
+    "second-brain",
+    "rag",
+    "knowledge-graph",
+    "vector-search",
+    "local-first",
+    "local-llm",
+    "ollama",
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "obsidian",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "pydantic>=2.0",
     "qdrant-client>=1.10",
@@ -35,6 +64,9 @@ memstrand = "memstrand.cli:main"
 Homepage = "https://github.com/chiranjeevirajukr/memstrand"
 Repository = "https://github.com/chiranjeevirajukr/memstrand"
 Source = "https://github.com/chiranjeevirajukr/memstrand"
+Documentation = "https://github.com/chiranjeevirajukr/memstrand/tree/master/docs"
+Issues = "https://github.com/chiranjeevirajukr/memstrand/issues"
+Changelog = "https://github.com/chiranjeevirajukr/memstrand/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/memstrand"]

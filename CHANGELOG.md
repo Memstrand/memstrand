@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Docs reorganized: the long reference material (configuration, architecture,
+  Python API, CLI/REST/MCP reference, integrations) moved out of
+  `README.md` into `docs/*.md`. `examples/second_brain.md` now points to
+  [`docs/integrations.md`](docs/integrations.md), which carries the same
+  content. No commands, env vars, or behavior changed — this is a docs-only
+  reorganization.
+
 ## [0.2.0] — "second brain"
 
 A rewrite of the storage and service layer: one daemon, zero required Docker,
