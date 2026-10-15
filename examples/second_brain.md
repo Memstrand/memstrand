@@ -53,10 +53,10 @@ memstrand serve
 ### llama.cpp server
 
 ```bash
-llama-server -m your-chat-model.gguf --port 8081
+llama-server -m your-chat-model.gguf --port 47811
 ```
 
-`http://localhost:8081/v1` is memstrand's own default `MEMSTRAND_LLM_BASE_URL`,
+`http://localhost:47811/v1` is memstrand's own default `MEMSTRAND_LLM_BASE_URL`,
 so if you're only using llama.cpp for chat you don't need to set anything.
 For embeddings, run a second `llama-server` instance with an embedding
 model (`--embedding`) on another port and point `MEMSTRAND_EMBED_BASE_URL`

@@ -106,7 +106,7 @@ Everything is an environment variable, read once per process via `get_settings()
 | `MEMSTRAND_HOME` | `~/.memstrand` | data directory — SQLite db, embedded Qdrant, ingest/hook state, backups |
 | `MEMSTRAND_QDRANT_URL` | *(unset — embedded on-disk Qdrant under `$MEMSTRAND_HOME/qdrant`)* | point at a real Qdrant server instead |
 | `MEMSTRAND_GRAPH_BACKEND` | `sqlite` | `sqlite` (default) or `kuzu` (needs `pip install memstrand[kuzu]`) |
-| `MEMSTRAND_LLM_BASE_URL` | `http://localhost:8081/v1` | OpenAI-compatible endpoint for `improve()` distillation, `grounded_answer()`, and the `/v1` proxy's upstream |
+| `MEMSTRAND_LLM_BASE_URL` | `http://localhost:47811/v1` (placeholder — point it at your actual server: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, llama.cpp `--port 47811`) | OpenAI-compatible endpoint for `improve()` distillation, `grounded_answer()`, and the `/v1` proxy's upstream |
 | `MEMSTRAND_LLM_MODEL` | `local` | model name sent to the LLM endpoint |
 | `MEMSTRAND_LLM_API_KEY` | `local` | bearer key sent to the LLM endpoint (most local servers ignore it) |
 | `MEMSTRAND_EMBED_BACKEND` | `fastembed` | `fastembed` (local ONNX, downloads `BAAI/bge-small-en-v1.5` on first use) or `openai` (any OpenAI-compatible `/embeddings` endpoint) |

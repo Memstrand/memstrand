@@ -438,6 +438,14 @@ def test_settings_env_parsing(monkeypatch, tmp_path):
     assert settings.embed_base_url == settings.llm_base_url
 
 
+def test_llm_base_url_default_is_47811(monkeypatch):
+    """Default MEMSTRAND_LLM_BASE_URL must not collide with common local
+    services (e.g. 8081, often used by SSM tunnels) — 47811 is unassigned
+    and below macOS's ephemeral port range."""
+    monkeypatch.delenv("MEMSTRAND_LLM_BASE_URL", raising=False)
+    assert get_settings().llm_base_url == "http://localhost:47811/v1"
+
+
 # -- embedded on-disk Qdrant ------------------------------------------------------
 
 

@@ -99,6 +99,11 @@ WebUI, and scripts.
   scope.
 - `Memory.update()` on a changed-content edit now always creates a new atom
   linked by a `supersedes` edge, rather than mutating the atom in place.
+- Default `MEMSTRAND_LLM_BASE_URL` moved from `http://localhost:8081/v1` to
+  `http://localhost:47811/v1`. Port 8081 is commonly used by other local
+  services (e.g. SSM tunnels), so memstrand's distillation/consolidation
+  could silently POST `/chat/completions` into an unrelated server; 47811 is
+  unassigned and below macOS's ephemeral port range.
 
 ### Fixed
 
@@ -125,6 +130,9 @@ WebUI, and scripts.
   (`memstrand[kuzu]`). SQLite is the default graph backend.
 - **Scoped `recall()` now includes globals** — if you relied on a
   task-scoped query *not* seeing global memories, that behavior changed.
+- **Default LLM endpoint changed**: `MEMSTRAND_LLM_BASE_URL` now defaults to
+  `http://localhost:47811/v1` instead of `http://localhost:8081/v1`. Set
+  `MEMSTRAND_LLM_BASE_URL=http://localhost:8081/v1` to keep the old default.
 
 ## [0.1.3]
 
