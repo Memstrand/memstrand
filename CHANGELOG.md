@@ -8,14 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- MCP server migrated to the v2 SDK (`mcp>=2,<3`): `FastMCP` is now
-  `MCPServer` (`mcp.server.mcpserver`), and `streamable_http_path` moved
-  from the constructor to `streamable_http_app()`. Tool/resource/prompt
-  surface is unchanged; tests updated for v2's `CallToolResult` return
-  shape and generic `ToolError` message.
-
-### Changed
-
 - Docs reorganized: the long reference material (configuration, architecture,
   Python API, CLI/REST/MCP reference, integrations) moved out of
   `README.md` into `docs/*.md`. `examples/second_brain.md` now points to
@@ -31,6 +23,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now `github.com/memstrand/memstrand` and the landing page lives at
   `memstrand.github.io`. All project URLs (README, PyPI page, issue
   templates, contributing docs) updated; old URLs redirect.
+- MCP server migrated to the v2 SDK (`mcp>=2,<3`): `FastMCP` is now
+  `MCPServer` (`mcp.server.mcpserver`), and `streamable_http_path` moved
+  from the constructor to `streamable_http_app()`. Tool/resource/prompt
+  surface is unchanged.
 
 ## [0.2.0] — "second brain"
 
