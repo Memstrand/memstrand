@@ -583,3 +583,70 @@ def test_cli_serve_without_flag_passes_scheduler_true(monkeypatch):
     rc = cli.main(["serve"])
     assert rc == 0
     assert captured["scheduler"] is True
+
+
+# ======================================================================================
+# 9. functional-review findings (2026-10-16): token-aware daemon probe;
+#    consolidate() never raises on httpx-level failures
+# ======================================================================================
+
+
+def _raise_invalid_url(*a, **k):
+    raise httpx.InvalidURL("Invalid port: ':1]'")
+
+
+def test_chat_completion_invalid_url_is_transient_llm_unavailable(monkeypatch):
+    """httpx errors raised before any response exists (InvalidURL from a
+    malformed proxy env, ProxyError, ...) must surface as transient
+    LLMUnavailable — not escape raw and crash consolidate()."""
+    monkeypatch.setattr(httpx, "post", _raise_invalid_url)
+    with pytest.raises(LLMUnavailable) as exc_info:
+        chat_completion("http://local:1234/v1", "x", [{"role": "user", "content": "hi"}])
+    assert exc_info.value.transient is True
+
+
+def test_is_llm_reachable_false_when_probe_blows_up_before_request(mem, monkeypatch):
+    monkeypatch.setattr(httpx, "post", _raise_invalid_url)
+    assert _is_llm_reachable(mem) is False
+
+
+def test_consolidate_run_never_raises_when_llm_probe_blows_up(mem, monkeypatch):
+    """consolidate() documents "Never raises" — an httpx-level failure in
+    the LLM reachability ping must degrade to a skipped distillation,
+    not abort expire/decay/dedup/replay."""
+    monkeypatch.setattr(httpx, "post", _raise_invalid_url)
+    report = mem.consolidate()
+    assert report["distilled"] == {"skipped": "local LLM unreachable"}
+
+
+def test_daemon_running_sends_configured_token(monkeypatch):
+    """A token-protected daemon 401s unauthenticated /api/health probes.
+    daemon_running() must send MEMSTRAND_TOKEN, or get_memory() mistakes
+    "protected" for "down" and falls back to a local Memory that crashes
+    on the embedded Qdrant on-disk lock while the daemon is healthy."""
+    seen = {}
+
+    def _get(url, timeout=None, headers=None):
+        seen["headers"] = headers
+        assert url.endswith("/api/health")
+        if (headers or {}).get("Authorization") == "Bearer s3cr3t":
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(401, json={"error": "missing or invalid bearer token"})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    monkeypatch.setenv("MEMSTRAND_TOKEN", "s3cr3t")
+    assert client_module.daemon_running("http://127.0.0.1:7777") is True
+    assert seen["headers"] == {"Authorization": "Bearer s3cr3t"}
+
+
+def test_daemon_running_without_token_sends_no_auth_header(monkeypatch):
+    seen = {}
+
+    def _get(url, timeout=None, headers=None):
+        seen["headers"] = headers
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    monkeypatch.delenv("MEMSTRAND_TOKEN", raising=False)
+    assert client_module.daemon_running("http://127.0.0.1:7777") is True
+    assert seen["headers"] is None

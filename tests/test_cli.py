@@ -448,10 +448,10 @@ def test_remote_count_uses_stats():
 
 
 def test_daemon_running_true_and_false(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda url, timeout=None: httpx.Response(200))
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=None, headers=None: httpx.Response(200))
     assert client.daemon_running("http://x") is True
 
-    def _fail(url, timeout=None):
+    def _fail(url, timeout=None, headers=None):
         raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(httpx, "get", _fail)

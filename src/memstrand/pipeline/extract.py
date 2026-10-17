@@ -104,6 +104,17 @@ def chat_completion(
         raise LLMUnavailable(
             f"LLM rejected request ({status}): {detail}", transient=False
         ) from e
+    except (httpx.HTTPError, httpx.InvalidURL) as e:
+        # Everything else httpx can raise before a response exists —
+        # InvalidURL (a plain Exception, NOT an HTTPError subclass) from a
+        # malformed proxy env, ProxyError, UnsupportedProtocol, ... — is
+        # environmental, not a verdict on the endpoint. Transient: a later
+        # attempt (or a fixed environment) may succeed. Without this,
+        # _is_llm_reachable() let these escape raw and crashed
+        # consolidate(), breaking its never-raises contract.
+        raise LLMUnavailable(
+            f"local LLM request failed ({type(e).__name__}): {e}", transient=True
+        ) from e
     try:
         return resp.json()["choices"][0]["message"]["content"]
     except (KeyError, IndexError, ValueError) as e:

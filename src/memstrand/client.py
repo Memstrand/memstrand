@@ -283,11 +283,23 @@ class RemoteMemory:
         return self._request("POST", "/api/ingest", json=payload) or {}
 
 
-def daemon_running(url: str | None = None, timeout: float = 0.5) -> bool:
-    """Quick health probe. `url` defaults to `settings.server_url`."""
+def daemon_running(
+    url: str | None = None, timeout: float = 0.5, token: str | None = None
+) -> bool:
+    """Quick health probe. `url` defaults to `settings.server_url`.
+
+    Sends the daemon token when one is configured: a token-protected
+    daemon answers /api/health with 401 to an unauthenticated probe, and
+    that 401 must not be mistaken for "daemon down" — the mistake made
+    get_memory() fall back to a local Memory and crash on the embedded
+    Qdrant on-disk lock while the daemon was up and healthy.
+    """
     url = (url or get_settings().server_url).rstrip("/")
+    if token is None:
+        token = os.environ.get("MEMSTRAND_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     try:
-        resp = httpx.get(f"{url}/api/health", timeout=timeout)
+        resp = httpx.get(f"{url}/api/health", timeout=timeout, headers=headers)
         return resp.status_code == 200
     except httpx.HTTPError:
         return False
@@ -304,7 +316,7 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
     daemon around, and for tests.
     """
     settings = get_settings()
-    if prefer_remote and daemon_running(settings.server_url):
-        token = os.environ.get("MEMSTRAND_TOKEN")
+    token = os.environ.get("MEMSTRAND_TOKEN")
+    if prefer_remote and daemon_running(settings.server_url, token=token):
         return RemoteMemory(settings.server_url, token=token)
     return Memory(settings=settings)
