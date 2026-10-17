@@ -601,7 +601,7 @@ def _scheduler_loop(
 
 class _McpBareDispatch:
     """Dispatches a bare "/mcp" request (no trailing slash) straight into
-    the FastMCP streamable-HTTP app, bypassing `Mount`.
+    the MCPServer streamable-HTTP app, bypassing `Mount`.
 
     `Mount("/mcp", ...)` only matches "/mcp/..." — its path regex requires
     a trailing slash before the sub-app's own path — so an exact "/mcp"
@@ -648,9 +648,12 @@ def create_app(
             "without MEMSTRAND_TOKEN set"
         )
 
-    fast_mcp = build_mcp(lambda: mem)
-    mcp_asgi_app = fast_mcp.streamable_http_app()  # lazily creates the session manager
-    session_manager = fast_mcp.session_manager
+    mcp_server = build_mcp(lambda: mem)
+    # streamable_http_path="/" so Mount("/mcp", ...) doesn't double the
+    # path segment; passed here (not the constructor) in the v2 SDK.
+    # Lazily creates the session manager.
+    mcp_asgi_app = mcp_server.streamable_http_app(streamable_http_path="/")
+    session_manager = mcp_server.session_manager
 
     stop_event = threading.Event()
     scheduler_thread: threading.Thread | None = None
@@ -659,7 +662,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         nonlocal scheduler_thread
-        # The mounted FastMCP app's own `lifespan=` is never invoked by
+        # The mounted MCPServer app's own `lifespan=` is never invoked by
         # Starlette (Mount doesn't propagate the lifespan ASGI scope into
         # sub-apps), so the session manager is run explicitly here,
         # inside the parent app's lifespan, instead.

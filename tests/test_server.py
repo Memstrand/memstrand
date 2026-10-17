@@ -482,12 +482,13 @@ def test_v1_models_fallback_when_upstream_unreachable(mem, tmp_path):
 async def test_build_mcp_tools_callable_in_process(mem):
     mcp = build_mcp(lambda: mem)
     result = await mcp.call_tool("remember", {"content": "a durable fact", "category": "fact"})
-    text = result[0].text
-    data = json_lib.loads(text)
+    # v2: call_tool returns a CallToolResult; dict returns serialize to a
+    # single JSON text block, list returns land in structured_content.
+    data = json_lib.loads(result.content[0].text)
     assert data["category"] == "fact"
 
     result = await mcp.call_tool("recall", {"query": "durable fact"})
-    hits = result[1]["result"]
+    hits = result.structured_content["result"]
     assert any(h["content"] == "a durable fact" for h in hits)
 
     tools = {t.name for t in await mcp.list_tools()}
@@ -506,13 +507,16 @@ def anyio_backend():
 
 
 def test_mcp_tool_rejects_invalid_category(mem):
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
 
     mcp = build_mcp(lambda: mem)
 
     async def _run():
-        with pytest.raises(ToolError, match="bogus"):
+        # v2 reports a generic ToolError message; the original validation
+        # error (naming the bad value) is chained as __cause__.
+        with pytest.raises(ToolError) as exc_info:
             await mcp.call_tool("remember", {"content": "x", "category": "bogus"})
+        assert "bogus" in str(exc_info.value.__cause__)
 
     import anyio
 

@@ -3,7 +3,7 @@
     python -m memstrand.mcp_server
 
 `build_mcp()` is the single source of truth for the tool surface. The
-daemon (server.py) mounts the exact same FastMCP instance at /mcp over
+daemon (server.py) mounts the exact same MCPServer instance at /mcp over
 streamable-HTTP so Claude Code, Cursor, etc. get identical tool
 behavior whether they speak stdio or HTTP — only `get_mem()` differs
 (a private lazily-constructed Memory for stdio, the daemon's shared
@@ -16,7 +16,7 @@ import sys
 from collections.abc import Callable
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .api import Memory
 from .config import get_settings
@@ -40,16 +40,19 @@ def _provenance(value: str) -> Provenance:
         raise ValueError(f"invalid provenance {value!r}; must be one of {_PROVENANCE_VALUES}") from None
 
 
-def build_mcp(get_mem: Callable[[], Memory]) -> FastMCP:
+def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
     """Register every memstrand tool against whatever `Memory` `get_mem()`
     returns, looked up fresh on every call so the daemon can share one
     long-lived Memory across requests while stdio mode builds its own.
 
-    `streamable_http_path="/"` so server.py can `Mount("/mcp", ...)` the
-    returned app's ASGI handler without doubling the path segment; it is
-    irrelevant to stdio transport.
+    Transport configuration (e.g. `streamable_http_path="/"`, so
+    server.py can `Mount("/mcp", ...)` the returned app's ASGI handler
+    without doubling the path segment) is passed to
+    `streamable_http_app()` / `run()` by the caller in the v2 SDK — it is
+    not a constructor argument anymore, and is irrelevant to stdio
+    transport.
     """
-    mcp = FastMCP("memstrand", streamable_http_path="/")
+    mcp = MCPServer("memstrand")
 
     @mcp.tool()
     def remember(
