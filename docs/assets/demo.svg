@@ -1,0 +1,98 @@
+<svg width="900" height="560" viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg"
+     role="img" aria-label="memstrand — 30 second demo">
+  <title>memstrand — 30 second demo</title>
+  <style>
+    svg { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #181825; }
+    text { font-size: 14px; }
+    .comment { fill: #6c7086; }
+    @keyframes fadeIn { 0% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes scrollBuf {
+  0.0000% { transform: translateY(-0px); }
+  76.3846% { transform: translateY(-0px); }
+  76.3946% { transform: translateY(-20px); }
+  76.3846% { transform: translateY(-20px); }
+  76.3946% { transform: translateY(-40px); }
+  81.2007% { transform: translateY(-40px); }
+  81.2107% { transform: translateY(-60px); }
+  82.0506% { transform: translateY(-60px); }
+  82.0606% { transform: translateY(-80px); }
+  90.3580% { transform: translateY(-80px); }
+  90.3680% { transform: translateY(-100px); }
+  90.6413% { transform: translateY(-100px); }
+  90.6513% { transform: translateY(-120px); }
+  90.9245% { transform: translateY(-120px); }
+  90.9345% { transform: translateY(-140px); }
+  91.2078% { transform: translateY(-140px); }
+  91.2178% { transform: translateY(-160px); }
+  91.4911% { transform: translateY(-160px); }
+  91.5011% { transform: translateY(-180px); }
+  91.7744% { transform: translateY(-180px); }
+  91.7844% { transform: translateY(-200px); }
+  92.0577% { transform: translateY(-200px); }
+  92.0677% { transform: translateY(-220px); }
+  92.0577% { transform: translateY(-220px); }
+  92.0677% { transform: translateY(-240px); }
+  100% { transform: translateY(-240px); }
+}
+@keyframes maskFade {
+  0% { opacity: 1; }
+  0.9915% { opacity: 0; }
+  99.0085% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes type1 { 0% { clip-path: inset(0 722.4px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+@keyframes type4 { 0% { clip-path: inset(0 747.6px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+@keyframes type7 { 0% { clip-path: inset(0 436.8px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+@keyframes type11 { 0% { clip-path: inset(0 445.2px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+@keyframes type17 { 0% { clip-path: inset(0 714.0px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+@keyframes type20 { 0% { clip-path: inset(0 504.0px 0 0); } 100% { clip-path: inset(0 0 0 0); } }
+  </style>
+  <defs>
+    <clipPath id="termclip"><rect x="20" y="50" width="860" height="474" rx="4"/></clipPath>
+  </defs>
+  <rect width="900" height="560" rx="12" fill="#181825"/>
+  <circle cx="34" cy="26" r="6" fill="#ff5f56"/>
+  <circle cx="54" cy="26" r="6" fill="#ffbd2e"/>
+  <circle cx="74" cy="26" r="6" fill="#27c93f"/>
+  <text x="450" y="31" text-anchor="middle" fill="#9399b2" font-size="13">memstrand — 30 second demo</text>
+  <rect x="20" y="50" width="860" height="474" rx="4" fill="#1e1e2e"/>
+  <g clip-path="url(#termclip)">
+    <g style="animation: scrollBuf 35.299s linear infinite;">
+      <text x="56.0" y="74.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 0.400s both;"><tspan fill="#6c7086"># Your agent learns a preference (global)</tspan></text>
+<text x="56.0" y="94.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="94.0" font-size="14" textLength="722.4" lengthAdjust="spacingAndGlyphs" style="animation: type1 3.951s steps(86, end) 0.700s both;"><tspan fill="#cdd6f4">memstrand remember 'Sam prefers concise answers with code first' --category preference</tspan></text>
+<text x="56.0" y="114.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 4.851s both;"><tspan fill="#cdd6f4">mem:3decf0e8c811a1b8</tspan></text>
+<text x="56.0" y="154.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 6.451s both;"><tspan fill="#6c7086"># ...and a fact while working on one task</tspan></text>
+<text x="56.0" y="174.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="174.0" font-size="14" textLength="747.6" lengthAdjust="spacingAndGlyphs" style="animation: type4 4.043s steps(89, end) 6.751s both;"><tspan fill="#cdd6f4">memstrand remember 'Playwright installed for the agent-testing task' --task agent-testing</tspan></text>
+<text x="56.0" y="194.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 10.994s both;"><tspan fill="#cdd6f4">mem:d6a426064166260e</tspan></text>
+<text x="56.0" y="234.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 12.594s both;"><tspan fill="#6c7086"># A different task asks about testing setup — no leak</tspan></text>
+<text x="56.0" y="254.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="254.0" font-size="14" textLength="436.8" lengthAdjust="spacingAndGlyphs" style="animation: type7 2.327s steps(52, end) 12.894s both;"><tspan fill="#cdd6f4">memstrand recall 'testing setup' --task disk-cleanup</tspan></text>
+<text x="56.0" y="274.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 15.421s both;"><tspan fill="#cdd6f4">0.644  [preference] Sam prefers concise answers with code first</tspan></text>
+<text x="56.0" y="294.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 15.521s both;"><tspan fill="#6c7086">          id=mem:3decf0e8c811a1b8  scope=global</tspan></text>
+<text x="56.0" y="334.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 17.421s both;"><tspan fill="#6c7086"># The right task sees its fact + your globals</tspan></text>
+<text x="56.0" y="354.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="354.0" font-size="14" textLength="445.2" lengthAdjust="spacingAndGlyphs" style="animation: type11 2.351s steps(53, end) 17.721s both;"><tspan fill="#cdd6f4">memstrand recall 'testing setup' --task agent-testing</tspan></text>
+<text x="56.0" y="374.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 20.272s both;"><tspan fill="#cdd6f4">0.775  [fact] Playwright installed for the agent-testing task</tspan></text>
+<text x="56.0" y="394.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 20.372s both;"><tspan fill="#6c7086">          id=mem:d6a426064166260e  scope=agent-testing</tspan></text>
+<text x="56.0" y="414.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 20.472s both;"><tspan fill="#cdd6f4">0.649  [preference] Sam prefers concise answers with code first</tspan></text>
+<text x="56.0" y="434.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 20.572s both;"><tspan fill="#6c7086">          id=mem:3decf0e8c811a1b8  scope=global</tspan></text>
+<text x="56.0" y="474.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 22.672s both;"><tspan fill="#6c7086"># Facts change; edits supersede — they don't delete</tspan></text>
+<text x="56.0" y="494.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="494.0" font-size="14" textLength="714.0" lengthAdjust="spacingAndGlyphs" style="animation: type17 3.795s steps(85, end) 22.972s both;"><tspan fill="#cdd6f4">memstrand edit mem:3decf0e8c811a1b8 --content 'Sam now prefers detailed explanations'</tspan></text>
+<text x="56.0" y="514.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 26.966s both;"><tspan fill="#cdd6f4">mem:634fabbb61869dfa</tspan></text>
+<text x="56.0" y="554.0" class="comment" font-size="14" font-style="italic" style="animation: fadeIn 0.18s ease-out 28.666s both;"><tspan fill="#6c7086"># Hand your local LLM a ready-made context block</tspan></text>
+<text x="56.0" y="574.0" fill="#a6e3a1" font-size="14">$ </text>
+<text x="72.8" y="574.0" font-size="14" textLength="504.0" lengthAdjust="spacingAndGlyphs" style="animation: type20 2.732s steps(60, end) 28.966s both;"><tspan fill="#cdd6f4">memstrand context 'write the test plan' --task agent-testing</tspan></text>
+<text x="56.0" y="594.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 31.899s both;"><tspan fill="#cdd6f4">## Memory (memstrand)</tspan></text>
+<text x="56.0" y="614.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 31.999s both;">&#160;</text>
+<text x="56.0" y="634.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 32.099s both;"><tspan fill="#cdd6f4">### Standing instructions &amp; preferences</tspan></text>
+<text x="56.0" y="654.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 32.199s both;"><tspan fill="#cdd6f4">- [preference] Sam now prefers detailed explanations</tspan></text>
+<text x="56.0" y="674.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 32.299s both;">&#160;</text>
+<text x="56.0" y="694.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 32.399s both;"><tspan fill="#cdd6f4">### Relevant memories</tspan></text>
+<text x="56.0" y="714.0" class="out-line" font-size="14" style="animation: fadeIn 0.18s ease-out 32.499s both;"><tspan fill="#cdd6f4">- [fact] Playwright installed for the agent-testing task</tspan></text>
+    </g>
+  </g>
+  <rect x="20" y="50" width="860" height="474" rx="4" fill="#1e1e2e" style="animation: maskFade 35.299s linear infinite;"/>
+</svg>
