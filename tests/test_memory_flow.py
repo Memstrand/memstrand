@@ -19,6 +19,11 @@ from memstrand.stores.graph_kuzu import KuzuGraphStore
 from memstrand.stores.sqlite import SqliteSessionStore
 from memstrand.stores.vector_qdrant import QdrantVectorStore
 
+# This module runs against real kuzu. CI's py3.13 jobs intentionally omit
+# the `kuzu` extra (no wheel coverage guaranteed), so skip the whole module
+# there instead of erroring at fixture setup — same as test_graph_stores.py.
+pytest.importorskip("kuzu")
+
 
 class HashEmbedder:
     """Deterministic keyword-overlap embeddings. Shared words => similar."""
