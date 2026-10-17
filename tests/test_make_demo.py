@@ -141,8 +141,12 @@ def test_fake_embedder_svg_has_dry_run_watermark(tmp_path):
 def test_fake_embedder_refuses_to_write_into_docs_assets():
     with pytest.raises(ValueError, match="docs/assets"):
         md.generate(out_dir=md.DOCS_ASSETS, fake_embedder=True)
-    assert not (md.DOCS_ASSETS / "demo.cast").exists()
-    assert not (md.DOCS_ASSETS / "demo.svg").exists()
+    # The committed demo (if present) must be the real one — never the
+    # watermarked output of a fake-embedder dry run.
+    for name in ("demo.cast", "demo.svg"):
+        path = md.DOCS_ASSETS / name
+        if path.exists():
+            assert md.WATERMARK_TEXT not in path.read_text()
 
 
 def test_fake_embedder_default_out_dir_is_not_docs_assets(tmp_path, monkeypatch):
