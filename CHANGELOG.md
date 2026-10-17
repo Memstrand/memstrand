@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   content. No commands, env vars, or behavior changed — this is a docs-only
   reorganization.
 
+## [0.2.1]
+
+### Changed
+
+- Project moved to the `memstrand` GitHub organization: the repository is
+  now `github.com/memstrand/memstrand` and the landing page lives at
+  `memstrand.github.io`. All project URLs (README, PyPI page, issue
+  templates, contributing docs) updated; old URLs redirect.
+
 ## [0.2.0] — "second brain"
 
 A rewrite of the storage and service layer: one daemon, zero required Docker,

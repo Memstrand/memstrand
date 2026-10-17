@@ -14,7 +14,7 @@ Only the latest `0.2.x` release is actively supported with security fixes.
 Please report security vulnerabilities using GitHub's private vulnerability
 reporting, not a public issue:
 
-[github.com/chiranjeevirajukr/memstrand/security/advisories/new](https://github.com/chiranjeevirajukr/memstrand/security/advisories/new)
+[github.com/memstrand/memstrand/security/advisories/new](https://github.com/memstrand/memstrand/security/advisories/new)
 
 You should receive an acknowledgment within a few days. Please include:
 

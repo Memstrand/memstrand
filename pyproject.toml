@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memstrand"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first typed memory for AI agents. Zero API keys."
 readme = "README.md"
 license = { text = "MIT" }
@@ -61,12 +61,12 @@ dev = ["pytest>=8.0", "ruff>=0.4"]
 memstrand = "memstrand.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/chiranjeevirajukr/memstrand"
-Repository = "https://github.com/chiranjeevirajukr/memstrand"
-Source = "https://github.com/chiranjeevirajukr/memstrand"
-Documentation = "https://github.com/chiranjeevirajukr/memstrand/tree/master/docs"
-Issues = "https://github.com/chiranjeevirajukr/memstrand/issues"
-Changelog = "https://github.com/chiranjeevirajukr/memstrand/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/memstrand/memstrand"
+Repository = "https://github.com/memstrand/memstrand"
+Source = "https://github.com/memstrand/memstrand"
+Documentation = "https://github.com/memstrand/memstrand/tree/master/docs"
+Issues = "https://github.com/memstrand/memstrand/issues"
+Changelog = "https://github.com/memstrand/memstrand/blob/master/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/memstrand"]

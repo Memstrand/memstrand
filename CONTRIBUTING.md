@@ -6,7 +6,7 @@ project — most changes are welcome, and the bar for a good first PR is low.
 ## Dev setup
 
 ```bash
-git clone https://github.com/chiranjeevirajukr/memstrand.git
+git clone https://github.com/memstrand/memstrand.git
 cd memstrand
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev,all]'
@@ -115,5 +115,5 @@ same method signatures. To add one:
 - Additional ingestion sources (see `src/memstrand/ingest.py`)
 
 If you're not sure whether an idea fits, open a
-[discussion](https://github.com/chiranjeevirajukr/memstrand/discussions)
+[discussion](https://github.com/memstrand/memstrand/discussions)
 or an issue first.

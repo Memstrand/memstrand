@@ -61,7 +61,7 @@ an appointed representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported by opening a
-[private security advisory](https://github.com/chiranjeevirajukr/memstrand/security/advisories/new)
+[private security advisory](https://github.com/memstrand/memstrand/security/advisories/new)
 or by contacting the maintainer via their GitHub profile. All complaints
 will be reviewed and investigated promptly and fairly.
 

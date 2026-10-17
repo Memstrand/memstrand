@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Thanks for the suggestion. Check the README's Roadmap and
-        [existing discussions](https://github.com/chiranjeevirajukr/memstrand/discussions)
+        [existing discussions](https://github.com/memstrand/memstrand/discussions)
         first in case it's already planned or being discussed.
 
   - type: textarea

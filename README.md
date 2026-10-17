@@ -7,8 +7,8 @@
 <p align="center">
   <a href="https://pypi.org/project/memstrand/"><img src="https://img.shields.io/pypi/v/memstrand" alt="PyPI"></a>
   <a href="https://pypi.org/project/memstrand/"><img src="https://img.shields.io/pypi/pyversions/memstrand" alt="Python versions"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/chiranjeevirajukr/memstrand" alt="License: MIT"></a>
-  <a href="https://github.com/chiranjeevirajukr/memstrand/actions/workflows/ci.yml"><img src="https://github.com/chiranjeevirajukr/memstrand/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/memstrand/memstrand" alt="License: MIT"></a>
+  <a href="https://github.com/memstrand/memstrand/actions/workflows/ci.yml"><img src="https://github.com/memstrand/memstrand/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 <p align="center">
