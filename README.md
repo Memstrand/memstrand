@@ -17,11 +17,9 @@
   <a href="docs/integrations.md">Integrations</a>
 </p>
 
-<!-- DEMO: re-enable once docs/assets/demo.svg is generated (make demo)
 <p align="center" id="demo">
   <img src="docs/assets/demo.svg" alt="memstrand 30-second demo" width="760">
 </p>
--->
 
 ## Why memstrand
 
