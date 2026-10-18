@@ -15,13 +15,20 @@ when nothing is listening.
 from __future__ import annotations
 
 import os
-from typing import Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
 
-from .api import Memory, StoreLocked
 from .config import Settings, get_settings
 from .schema import Category, MemoryAtom, Provenance
+
+if TYPE_CHECKING:
+    # `.api` pulls in qdrant_client -> fastembed -> onnxruntime; `Memory`
+    # (used only in annotations here) and `StoreLocked` (used only inside
+    # `open_local_memory`, imported there) are both deferred so remote-mode
+    # callers (hooks, the CLI against a running daemon, ...) never pay that
+    # cost just to import this module.
+    from .api import Memory
 
 DaemonStatus = Literal["up", "rejected", "down"]
 
@@ -45,6 +52,8 @@ def normalize_atom(atom: MemoryAtom | dict) -> dict:
     returns `MemoryAtom` objects. Call this to use one shape either way."""
     if isinstance(atom, dict):
         return atom
+    from .api import Memory
+
     return Memory.atom_to_dict(atom)
 
 
@@ -361,6 +370,8 @@ def open_local_memory(settings: Settings | None = None) -> Memory:
     fallback for any other RuntimeError shaped like Qdrant's own lock
     message that doesn't come wrapped in `StoreLocked` (e.g. a different
     code path reaching the same embedded store)."""
+    from .api import Memory, StoreLocked
+
     settings = settings or get_settings()
     try:
         return Memory(settings=settings)

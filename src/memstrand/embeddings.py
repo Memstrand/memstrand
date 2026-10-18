@@ -19,6 +19,21 @@ if TYPE_CHECKING:
     from .config import Settings
 
 
+def _quiet_onnxruntime() -> None:
+    """Best-effort: silence onnxruntime's default logger before fastembed
+    loads a model, so local-mode daemons/CLI don't spew its hardware-probe
+    warning (e.g. "Skipping pci_bus_id for PCI path ..." on some Linux
+    VMs) to stderr. fastembed depends on onnxruntime, so by the time a
+    model is actually constructed it's importable; this is still wrapped
+    defensively since it's cosmetic, not load-bearing."""
+    try:
+        import onnxruntime
+
+        onnxruntime.set_default_logger_severity(3)  # 3 = ERROR, suppresses WARNING
+    except (ImportError, AttributeError):
+        pass
+
+
 class EmbeddingUnavailable(RuntimeError):
     """The configured embedding backend didn't answer (connection refused,
     timed out, or returned an error status). This is transient and holds
@@ -42,6 +57,7 @@ class FastEmbedder:
 
     def _load(self):
         if self._model is None:
+            _quiet_onnxruntime()
             from fastembed import TextEmbedding
 
             kwargs = {"model_name": self._model_name} if self._model_name else {}
@@ -112,6 +128,7 @@ class Reranker:
 
     def _load(self):
         if self._model is None:
+            _quiet_onnxruntime()
             try:
                 from fastembed.rerank.cross_encoder import TextCrossEncoder
             except ImportError as e:

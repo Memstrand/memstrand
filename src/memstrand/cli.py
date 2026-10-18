@@ -22,7 +22,6 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .api import Memory
 from .client import get_memory, normalize_atom, probe_daemon
 from .config import ensure_private_dir, get_settings, secure_file
 from .schema import Category, Provenance
@@ -346,6 +345,7 @@ def _watch_remote(url: str, args) -> None:
 
 def _watch_local(args) -> None:
     from . import ingest as ingest_module
+    from .api import Memory
 
     with Memory() as mem:
         print(f"watching {args.path} locally (every {args.interval}s, Ctrl-C to stop)")

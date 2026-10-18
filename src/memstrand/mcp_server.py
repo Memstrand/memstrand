@@ -17,16 +17,23 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .api import Memory
 from .client import RemoteError, open_local_memory, probe_daemon
 from .config import get_settings
 from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
+
+if TYPE_CHECKING:
+    # `.api` pulls in qdrant_client -> fastembed -> onnxruntime; only
+    # imported for type annotations here. `_lazy_memory()`/`open_local_memory`
+    # (client.py) are what actually construct one, on first real use --
+    # merely importing this module (e.g. to check whether a daemon is
+    # already up in `main()`) must stay cheap.
+    from .api import Memory
 
 
 def _guarded(fn):

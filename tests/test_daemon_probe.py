@@ -115,7 +115,7 @@ def test_get_memory_raises_daemon_rejected_against_real_server(monkeypatch):
         monkeypatch.setenv("MEMSTRAND_HOST", "127.0.0.1")
         monkeypatch.setenv("MEMSTRAND_PORT", str(httpd.server_address[1]))
         monkeypatch.setattr(
-            "memstrand.client.Memory",
+            "memstrand.api.Memory",
             lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct a local Memory")),
         )
         with pytest.raises(DaemonRejected) as exc_info:
@@ -140,7 +140,7 @@ def test_get_memory_opens_local_when_port_is_closed(monkeypatch):
     monkeypatch.setenv("MEMSTRAND_HOST", "127.0.0.1")
     monkeypatch.setenv("MEMSTRAND_PORT", str(_closed_port()))
     sentinel = object()
-    monkeypatch.setattr("memstrand.client.Memory", lambda **kwargs: sentinel)
+    monkeypatch.setattr("memstrand.api.Memory", lambda **kwargs: sentinel)
     assert get_memory() is sentinel
 
 
@@ -155,7 +155,7 @@ def test_hook_claude_code_on_rejected_daemon_logs_and_skips_without_opening_memo
         monkeypatch.setenv("MEMSTRAND_HOST", "127.0.0.1")
         monkeypatch.setenv("MEMSTRAND_PORT", str(httpd.server_address[1]))
         monkeypatch.setattr(
-            "memstrand.client.Memory",
+            "memstrand.api.Memory",
             lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct a local Memory")),
         )
 
@@ -184,7 +184,7 @@ def test_hook_claude_code_context_on_rejected_daemon_prints_nothing(monkeypatch,
         monkeypatch.setenv("MEMSTRAND_HOST", "127.0.0.1")
         monkeypatch.setenv("MEMSTRAND_PORT", str(httpd.server_address[1]))
         monkeypatch.setattr(
-            "memstrand.client.Memory",
+            "memstrand.api.Memory",
             lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct a local Memory")),
         )
 

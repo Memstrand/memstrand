@@ -475,7 +475,11 @@ def test_get_memory_falls_back_local_without_constructing_real_memory(monkeypatc
 
     monkeypatch.setattr(httpx, "get", _fail)
     sentinel = object()
-    monkeypatch.setattr(client, "Memory", lambda **kwargs: sentinel)
+    # `open_local_memory()` imports `Memory` lazily from `.api` on every
+    # call (see client.py), so patching the real `memstrand.api.Memory`
+    # -- not a module-level `client.Memory` attribute, which no longer
+    # exists -- is what actually takes effect here.
+    monkeypatch.setattr("memstrand.api.Memory", lambda **kwargs: sentinel)
     assert client.get_memory() is sentinel
 
 
@@ -484,7 +488,8 @@ def test_get_memory_raises_daemon_rejected_without_constructing_real_memory(monk
     # through to a local Memory() -- that would crash on Qdrant's lock.
     monkeypatch.setattr(httpx, "get", lambda url, timeout=None, headers=None: httpx.Response(401))
     monkeypatch.setattr(
-        client, "Memory", lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct Memory"))
+        "memstrand.api.Memory",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct Memory")),
     )
     with pytest.raises(client.DaemonRejected, match="rejected this client"):
         client.get_memory()
