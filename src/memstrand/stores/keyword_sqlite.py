@@ -15,6 +15,7 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
+from ..config import ensure_private_dir, secure_file
 from ..ranking import keyword_strength
 from ..schema import MemoryAtom, ScopedQuery
 
@@ -46,10 +47,12 @@ def _scope_clause(query: ScopedQuery) -> tuple[str, list]:
 
 class SqliteKeywordIndex:
     def __init__(self, path: str = "./memstrand.db"):
+        is_new = path == ":memory:" or not os.path.exists(path)
         if path != ":memory:":
             parent = os.path.dirname(path)
             if parent:
-                os.makedirs(parent, exist_ok=True)
+                # deep-review fix #12: directories memstrand creates are 0o700.
+                ensure_private_dir(parent)
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -58,6 +61,13 @@ class SqliteKeywordIndex:
         # processes (graph + sessions + keyword index).
         self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
+        if is_new and path != ":memory:":
+            # deep-review fix #12: a db file we created is 0o600 (shared
+            # with the other sqlite-backed stores; harmless to chmod again
+            # if another store got here first).
+            secure_file(path)
+            secure_file(f"{path}-wal")
+            secure_file(f"{path}-shm")
 
     def _init_schema(self) -> None:
         with self._lock:

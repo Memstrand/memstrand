@@ -110,6 +110,13 @@ claude mcp add --transport http memstrand http://127.0.0.1:7777/mcp \
   --header "Authorization: Bearer $MEMSTRAND_TOKEN"
 ```
 
+This also works against a non-loopback daemon (`MEMSTRAND_HOST=0.0.0.0`)
+as long as `MEMSTRAND_TOKEN` is set and sent as the header above — see
+[docs/cli.md](cli.md#security-notes) for the full security model. If
+you're pointing a browser-based MCP client (e.g. the MCP inspector) at
+the daemon, add its origin to `MEMSTRAND_ALLOWED_ORIGINS` — see
+[docs/configuration.md](configuration.md).
+
 Equivalent `.mcp.json` / `~/.claude/mcp.json` entry:
 
 ```json
@@ -146,6 +153,13 @@ This wires:
 Both hook subcommands scope memories by the enclosing git repo's directory
 name by default (`--task-from cwd`); use `--task-from none` for no task
 scoping, or `--task-from env` to read `MEMSTRAND_TASK` instead.
+
+If a daemon is running but rejects the hook's `MEMSTRAND_TOKEN` (missing
+or wrong), the hook fails fast with a "set MEMSTRAND_TOKEN" message rather
+than silently opening a second, unscoped local store — see
+[docs/cli.md](cli.md#security-notes). That failure (and anything else that
+goes wrong) is logged to `{MEMSTRAND_HOME}/hook.log`, since hook stderr
+isn't normally visible in Claude Code's UI.
 
 ---
 
@@ -298,7 +312,10 @@ memstrand ingest ~/Documents/MyVault --task notes --watch --interval 10
 `--watch` talks to the daemon if one is running (so ingestion goes through
 the shared store) and falls back to a local, private `Memory()` otherwise.
 Only changed files are re-ingested (sha256 change detection); `[[wikilink]]`
-targets become `related_to` graph edges between notes.
+targets become `related_to` graph edges between notes. A missing vault path
+is an error; symlinks inside the vault that point outside its root, and
+non-regular files (FIFOs, device files, sockets — not uncommon in a synced
+folder), are skipped rather than followed/read.
 
 Change tracking is per `(task, path)`, so the same vault can be ingested
 into more than one task independently:

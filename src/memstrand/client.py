@@ -15,18 +15,29 @@ when nothing is listening.
 from __future__ import annotations
 
 import os
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import httpx
 
-from .api import Memory
-from .config import get_settings
+from .api import Memory, StoreLocked
+from .config import Settings, get_settings
 from .schema import Category, MemoryAtom, Provenance
+
+DaemonStatus = Literal["up", "rejected", "down"]
 
 
 class RemoteError(RuntimeError):
     """A non-2xx response from the daemon, or the daemon being unreachable.
     The message is the daemon's own `{"error": ...}` body when available."""
+
+
+class DaemonRejected(RemoteError):
+    """The daemon answered but rejected this client: any non-200 response
+    to the health probe (401/403/other), typically a missing or wrong
+    `MEMSTRAND_TOKEN`. This is deliberately NOT treated as "daemon down" —
+    something is listening and owns the stores, so falling back to a local
+    `Memory` here would try to open stores the daemon already holds and
+    crash on Qdrant's on-disk lock instead of surfacing the real reason."""
 
 
 def normalize_atom(atom: MemoryAtom | dict) -> dict:
@@ -283,30 +294,89 @@ class RemoteMemory:
         return self._request("POST", "/api/ingest", json=payload) or {}
 
 
-def daemon_running(
-    url: str | None = None, timeout: float = 0.5, token: str | None = None
-) -> bool:
-    """Quick health probe. `url` defaults to `settings.server_url`.
+def _probe_response(url: str, timeout: float, token: str | None) -> httpx.Response | None:
+    """One `/api/health` GET. Returns the response, or `None` if the
+    daemon is unreachable (connection refused/timeout/any other
+    `httpx.HTTPError`, or a malformed `url`) — the "down" case. A
+    response object (any status code) means something is listening."""
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    try:
+        return httpx.get(f"{url}/api/health", timeout=timeout, headers=headers)
+    except (httpx.HTTPError, httpx.InvalidURL):
+        return None
 
-    Sends the daemon token when one is configured: a token-protected
-    daemon answers /api/health with 401 to an unauthenticated probe, and
-    that 401 must not be mistaken for "daemon down" — the mistake made
-    get_memory() fall back to a local Memory and crash on the embedded
-    Qdrant on-disk lock while the daemon was up and healthy.
+
+def probe_daemon(
+    url: str | None = None, token: str | None = None, timeout: float = 0.5
+) -> DaemonStatus:
+    """Tri-state health probe. `url` defaults to `settings.server_url`.
+
+    - `"up"`: the daemon answered 200 — safe to use as `RemoteMemory`.
+    - `"rejected"`: the daemon answered with anything else (401, 403, a
+      5xx, ...) — something IS listening and owns the stores, it just
+      didn't like this client (usually a missing/wrong `MEMSTRAND_TOKEN`).
+      This must never be treated the same as "down": the old behavior
+      (any non-200 -> "down") sent callers straight into a local `Memory`
+      that then crashed on Qdrant's on-disk "already accessed by another
+      instance" lock, or silently raced the daemon's SQLite WAL.
+    - `"down"`: connection refused, timeout, or any other transport
+      error — nothing is listening, a local `Memory` is safe to open.
     """
     url = (url or get_settings().server_url).rstrip("/")
     if token is None:
         token = os.environ.get("MEMSTRAND_TOKEN")
-    headers = {"Authorization": f"Bearer {token}"} if token else None
+    resp = _probe_response(url, timeout, token)
+    if resp is None:
+        return "down"
+    return "up" if resp.status_code == 200 else "rejected"
+
+
+def daemon_running(
+    url: str | None = None, timeout: float = 0.5, token: str | None = None
+) -> bool:
+    """Thin bool wrapper over `probe_daemon`, kept for compatibility with
+    callers that only care "is it safe to treat the daemon as up" — `True`
+    only for `"up"`; both `"rejected"` and `"down"` are `False`. Prefer
+    `probe_daemon` directly wherever the "rejected" case needs its own
+    handling (it almost always does, see `probe_daemon`)."""
+    return probe_daemon(url, timeout=timeout, token=token) == "up"
+
+
+def _wrap_qdrant_lock_error(settings: Settings, exc: RuntimeError) -> RemoteError:
+    return RemoteError(
+        f"the memstrand store at {settings.home} is locked by another process "
+        "(is a daemon running on a different MEMSTRAND_PORT?)"
+    )
+
+
+def open_local_memory(settings: Settings | None = None) -> Memory:
+    """Construct a local `Memory`, turning Qdrant's on-disk single-writer
+    lock into an actionable message instead of a raw
+    "Storage folder ... already accessed by another instance" error.
+
+    `Memory()` now raises `StoreLocked` (a `RuntimeError`) itself, eagerly,
+    at construction time — the vector store is no longer built lazily on
+    first embed, so this is always caught here rather than surfacing later
+    inside `remember()`/`recall()`. The raw substring check stays as a
+    fallback for any other RuntimeError shaped like Qdrant's own lock
+    message that doesn't come wrapped in `StoreLocked` (e.g. a different
+    code path reaching the same embedded store)."""
+    settings = settings or get_settings()
     try:
-        resp = httpx.get(f"{url}/api/health", timeout=timeout, headers=headers)
-        return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
+        return Memory(settings=settings)
+    except StoreLocked as exc:
+        raise _wrap_qdrant_lock_error(settings, exc) from exc
+    except RuntimeError as exc:
+        if "already accessed by another instance" in str(exc):
+            raise _wrap_qdrant_lock_error(settings, exc) from exc
+        raise
 
 
 def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
-    """`RemoteMemory` if the daemon is up, else a local `Memory()`.
+    """`RemoteMemory` if the daemon is up, a local `Memory()` if nothing
+    answers, or `DaemonRejected` if something answers but refuses this
+    client (see `probe_daemon`) — the caller gets the real reason instead
+    of a confusing Qdrant lock crash.
 
     Preferring remote matters because the embedded Qdrant/SQLite stores
     are single-writer: opening them locally while a daemon already holds
@@ -317,6 +387,15 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
     """
     settings = get_settings()
     token = os.environ.get("MEMSTRAND_TOKEN")
-    if prefer_remote and daemon_running(settings.server_url, token=token):
-        return RemoteMemory(settings.server_url, token=token)
-    return Memory(settings=settings)
+    if prefer_remote:
+        url = settings.server_url.rstrip("/")
+        resp = _probe_response(url, 0.5, token)
+        if resp is not None:
+            if resp.status_code == 200:
+                return RemoteMemory(settings.server_url, token=token)
+            raise DaemonRejected(
+                f"a memstrand daemon is running at {settings.server_url} but rejected "
+                f"this client (HTTP {resp.status_code}) — set MEMSTRAND_TOKEN to the "
+                "daemon's token"
+            )
+    return open_local_memory(settings)

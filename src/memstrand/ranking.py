@@ -7,7 +7,7 @@ here is pure functions over plain data, easy to unit-test without a store.
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 
 from .schema import Provenance
 
@@ -26,9 +26,18 @@ def provenance_weight(provenance: Provenance) -> float:
 
 
 def recency_weight(dt: datetime | None, now: datetime, half_life_days: float) -> float:
-    """Exponential decay: 1.0 at age 0, 0.5 at `half_life_days`."""
+    """Exponential decay: 1.0 at age 0, 0.5 at `half_life_days`.
+
+    `dt`/`now` are coerced naive-as-UTC defensively: MemoryAtom's own
+    validators already do this for anything built through the model, but
+    this stays defensive in case either ever flows in from an untyped
+    source without it."""
     if dt is None:
         return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     age_days = max((now - dt).total_seconds() / 86400.0, 0.0)
     return math.exp(-math.log(2) * age_days / half_life_days)
 

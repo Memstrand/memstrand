@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="memstrand" width="760">
+  <img src="https://raw.githubusercontent.com/memstrand/memstrand/master/docs/assets/banner.svg" alt="memstrand" width="760">
 </p>
 
 <p align="center"><strong>Local-first memory for AI agents. Typed, scoped, and it never leaks one task into another.</strong></p>
@@ -7,18 +7,18 @@
 <p align="center">
   <a href="https://pypi.org/project/memstrand/"><img src="https://img.shields.io/pypi/v/memstrand" alt="PyPI"></a>
   <a href="https://pypi.org/project/memstrand/"><img src="https://img.shields.io/pypi/pyversions/memstrand" alt="Python versions"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/memstrand/memstrand" alt="License: MIT"></a>
+  <a href="https://github.com/memstrand/memstrand/blob/master/LICENSE"><img src="https://img.shields.io/github/license/memstrand/memstrand" alt="License: MIT"></a>
   <a href="https://github.com/memstrand/memstrand/actions/workflows/ci.yml"><img src="https://github.com/memstrand/memstrand/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
 </p>
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
   <a href="#docs">Docs</a> ·
-  <a href="docs/integrations.md">Integrations</a>
+  <a href="https://github.com/memstrand/memstrand/blob/master/docs/integrations.md">Integrations</a>
 </p>
 
 <p align="center" id="demo">
-  <img src="docs/assets/demo.svg" alt="memstrand 30-second demo" width="760">
+  <img src="https://raw.githubusercontent.com/memstrand/memstrand/master/docs/assets/demo.svg" alt="memstrand 30-second demo" width="760">
 </p>
 
 ## Why memstrand
@@ -91,7 +91,7 @@ memstrand ingest ~/notes --watch                                   # keep your n
 ```
 
 Full setup recipes (Ollama/llama.cpp/LM Studio, Cursor, launchd/systemd
-autostart, cron backups) are in [docs/integrations.md](docs/integrations.md).
+autostart, cron backups) are in [docs/integrations.md](https://github.com/memstrand/memstrand/blob/master/docs/integrations.md).
 
 ## Features
 
@@ -136,15 +136,15 @@ atoms from raw session turns via your local LLM and promotes them with
 scope filter first, then blends hybrid relevance with confidence, recency,
 provenance, and access frequency. **Consolidate** expires, decays, dedups,
 and replays on a schedule. Full detail, including the ranking formula and
-FSRS/Hebbian dynamics, in [docs/architecture.md](docs/architecture.md).
+FSRS/Hebbian dynamics, in [docs/architecture.md](https://github.com/memstrand/memstrand/blob/master/docs/architecture.md).
 
 ## Docs
 
-- [docs/configuration.md](docs/configuration.md) — every `MEMSTRAND_*` environment variable
-- [docs/architecture.md](docs/architecture.md) — stores, write/distill/read/consolidate paths, ranking formula
-- [docs/python-api.md](docs/python-api.md) — the full `Memory` method surface
-- [docs/cli.md](docs/cli.md) — every CLI command/flag, plus REST/MCP reference and security notes
-- [docs/integrations.md](docs/integrations.md) — Ollama/llama.cpp/LM Studio, Claude Code, Cursor, Open WebUI, autostart, backups, Obsidian
+- [docs/configuration.md](https://github.com/memstrand/memstrand/blob/master/docs/configuration.md) — every `MEMSTRAND_*` environment variable
+- [docs/architecture.md](https://github.com/memstrand/memstrand/blob/master/docs/architecture.md) — stores, write/distill/read/consolidate paths, ranking formula
+- [docs/python-api.md](https://github.com/memstrand/memstrand/blob/master/docs/python-api.md) — the full `Memory` method surface
+- [docs/cli.md](https://github.com/memstrand/memstrand/blob/master/docs/cli.md) — every CLI command/flag, plus REST/MCP reference and security notes
+- [docs/integrations.md](https://github.com/memstrand/memstrand/blob/master/docs/integrations.md) — Ollama/llama.cpp/LM Studio, Claude Code, Cursor, Open WebUI, autostart, backups, Obsidian
 
 ## Acceptance test
 
@@ -167,10 +167,10 @@ adapted from a Cognee ad, because it was right):
 - [x] Hybrid (dense + BM25) retrieval + optional cross-encoder reranking
 - [x] Markdown/Obsidian/PDF ingestion with `--watch`
 - [x] Claude Code hooks, `export`/`import`/`backup`/`restore`
-- [ ] Automated migration tooling from 0.1.x's working-directory layout — see [CHANGELOG.md](CHANGELOG.md) (good first issue)
+- [ ] Automated migration tooling from 0.1.x's working-directory layout — see [CHANGELOG.md](https://github.com/memstrand/memstrand/blob/master/CHANGELOG.md) (good first issue)
 - [ ] Multi-user auth beyond a single shared bearer token (good first issue)
 
-Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev
+Contributions welcome — see [CONTRIBUTING.md](https://github.com/memstrand/memstrand/blob/master/CONTRIBUTING.md) for dev
 setup, test philosophy, and how to add a store backend.
 
 ## Acknowledgments
@@ -184,7 +184,7 @@ Standing on shoulders, with credit:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/memstrand/memstrand/blob/master/LICENSE).
 
 ---
 

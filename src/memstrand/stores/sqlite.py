@@ -18,14 +18,18 @@ import sqlite3
 import threading
 import time
 
+from ..config import ensure_private_dir, secure_file
+
 
 class SqliteSessionStore:
     def __init__(self, path: str = "./memstrand.db"):
         parent = os.path.dirname(path)
         if parent:
-            os.makedirs(parent, exist_ok=True)
+            # deep-review fix #12: directories memstrand creates are 0o700.
+            ensure_private_dir(parent)
         self.path = path  # discoverable by Memory, to co-locate the keyword index
         self._lock = threading.RLock()
+        is_new = not os.path.exists(path)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         # Wait up to 5s for a lock instead of raising "database is locked"
@@ -33,6 +37,13 @@ class SqliteSessionStore:
         # processes (graph + sessions + keyword index).
         self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
+        if is_new:
+            # deep-review fix #12: the db file (and its WAL/SHM siblings,
+            # once sqlite creates them) are 0o600 — only chmod files we
+            # actually created, never an existing user-supplied db.
+            secure_file(path)
+            secure_file(f"{path}-wal")
+            secure_file(f"{path}-shm")
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -132,6 +143,16 @@ class SqliteSessionStore:
                    HAVING MAX(t.id) > COALESCE(MAX(d.last_turn_id), 0)"""
             ).fetchall()
         return [r[0] for r in rows]
+
+    def dump_distill_state(self) -> list[dict]:
+        """Every session's distillation watermark, for export (fix #9:
+        distill_state previously had no export/import round-trip at all,
+        so restoring a backup re-distilled every session from scratch)."""
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT session_id, last_turn_id FROM distill_state"
+            ).fetchall()
+        return [{"session_id": s, "last_turn_id": t} for s, t in rows]
 
     # -- provenance ledger (append-only) -----------------------------------------
 

@@ -10,10 +10,33 @@ is lazy: importing this module must not require kuzu to be installed.
 
 from __future__ import annotations
 
+import os
 import threading
 from datetime import UTC, datetime
 
+from ..config import ensure_private_dir
 from ..schema import Category, MemoryAtom, MemoryEdge, Provenance, RelationType
+from .base import sort_hop_results
+
+
+def _atom_filter_clause(
+    category: str | None, task_id: str | None, host: str | None, alias: str = "a"
+) -> tuple[str, dict]:
+    """Shared WHERE-clause builder for list_atoms/count_atoms so the two
+    can never drift out of sync on filter semantics (fix #10)."""
+    clauses: list[str] = []
+    params: dict = {}
+    for col, value in (("category", category), ("task_id", task_id), ("host", host)):
+        if value is None:
+            continue
+        if value == "":
+            clauses.append(f"({alias}.{col} IS NULL OR {alias}.{col} = '')")
+        else:
+            clauses.append(f"{alias}.{col} = ${col}")
+            params[col] = value
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
 
 # Columns added after the v0.1 schema. ALTER TABLE ... ADD IF NOT EXISTS is
 # idempotent, so re-running this against a fresh (already-current) DB or an
@@ -86,6 +109,13 @@ class KuzuGraphStore:
                 "Install it with: pip install 'memstrand[kuzu]'"
             ) from e
         self._lock = threading.RLock()
+        # deep-review fix #12: `path` itself is a Kuzu-managed database
+        # file/bundle (Kuzu errors out if it already exists as a plain
+        # directory), so only the PARENT directory is ours to harden here
+        # — created 0o700 under our own umask before Kuzu creates `path`.
+        parent = os.path.dirname(path)
+        if parent:
+            ensure_private_dir(parent)
         self.db = kuzu.Database(path)
         self.conn = kuzu.Connection(self.db)
         self._init_schema()
@@ -219,17 +249,7 @@ class KuzuGraphStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[MemoryAtom]:
-        clauses = []
-        params: dict = {}
-        for col, value in (("category", category), ("task_id", task_id), ("host", host)):
-            if value is None:
-                continue
-            if value == "":
-                clauses.append(f"(a.{col} IS NULL OR a.{col} = '')")
-            else:
-                clauses.append(f"a.{col} = ${col}")
-                params[col] = value
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        where, params = _atom_filter_clause(category, task_id, host)
         with self._lock:
             rows = self.conn.execute(
                 f"""MATCH (a:Atom) {where}
@@ -244,9 +264,15 @@ class KuzuGraphStore:
             ).get_all()
         return [_row_to_atom(row) for row in rows]
 
-    def count_atoms(self) -> int:
+    def count_atoms(
+        self,
+        category: str | None = None,
+        task_id: str | None = None,
+        host: str | None = None,
+    ) -> int:
+        where, params = _atom_filter_clause(category, task_id, host)
         with self._lock:
-            row = self.conn.execute("MATCH (a:Atom) RETURN count(*)").get_next()
+            row = self.conn.execute(f"MATCH (a:Atom) {where} RETURN count(*)", params).get_next()
         return int(row[0]) if row else 0
 
     def ids_by_source(self, source: str) -> list[str]:
@@ -341,7 +367,15 @@ class KuzuGraphStore:
             ).get_all()
         for r in outgoing + incoming:
             out.append((_row_to_atom(r[:19]), _row_to_edge(r[19:])))
-        return out
+        # Deterministic order (fix: cross-backend neighbors(depth>1) parity)
+        # -- Cypher gives no ordering guarantee either, and the outgoing/
+        # incoming results are two separately-ordered result sets
+        # concatenated together besides. `sort_hop_results` is the one
+        # shared rule (see its docstring in stores/base.py) every
+        # `GraphStore` backend's `_one_hop` sorts through, so a node
+        # reachable via more than one parallel edge resolves to the same
+        # "first" edge here as it does in SqliteGraphStore.
+        return sort_hop_results(out)
 
     def neighbors(
         self, atom_id: str, relation: str | None = None, depth: int = 1
@@ -349,7 +383,14 @@ class KuzuGraphStore:
         """Depth-1 neighbor hydration, both directions. relation filters
         to one edge type (e.g. 'contradicts'). Deeper traversal is a BFS
         over this primitive — depth>1 expands one hop at a time, never
-        revisiting a node and never returning the start atom."""
+        revisiting a node and never returning the start atom.
+
+        Parallel edges (more than one edge connecting the same pair) mean a
+        node can be reachable via more than one edge at the same depth; the
+        dedup-by-id `seen` set below keeps only the FIRST one encountered.
+        `_one_hop` always returns its rows pre-sorted via
+        `sort_hop_results`, so that "first" edge is deterministic and
+        identical to `SqliteGraphStore`'s choice for the same data."""
         out = self._one_hop(atom_id, relation)
         if depth > 1:
             seen = {atom_id} | {a.id for a, _ in out}

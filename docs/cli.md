@@ -29,6 +29,11 @@
 Every data-touching command talks to a running daemon if one is up,
 otherwise opens a local store directly.
 
+`<role>` for `log-turn` (and the REST `/api/turns` / MCP `log_turn`
+surfaces below) must be one of `user`, `assistant`, `system`, `tool`. REST
+rejects any other value with a 400; the MCP tool's `role` parameter is
+typed so the MCP SDK rejects an invalid value before the tool runs.
+
 ## Flags by command
 
 - `serve`: `--host`, `--port`, `--no-scheduler` (disable the background
@@ -46,7 +51,10 @@ otherwise opens a local store directly.
 - `improve`: `--session` (repeatable), `--background`
 - `answer <question>`: `--task`
 - `context [query]`: `--task`, `--limit`
-- `ingest <path>`: `--task`, `--force`, `--watch`, `--interval`
+- `ingest <path>`: `--task`, `--force`, `--watch`, `--interval` — a missing
+  `path` is an error (not a silent no-op); symlinks that resolve outside
+  `path`'s own root and non-regular files (FIFOs, device files, sockets)
+  are skipped rather than followed/read
 - `export`: `--format {jsonl,markdown}`, `-o/--output`
 - `import <file>`: positional file, or `-` for stdin
 - `backup`: `-o/--output` (defaults to `{home}/backups/memstrand-<ts>.jsonl`)
@@ -70,23 +78,67 @@ view; pass `?scoped=1&task_id=..&host=..` to apply the same scope rule as
 `remember`, `recall`, `context`, `answer`, `update`, `forget`, `log_turn`,
 `improve`, `ingest`, `stats` — plus a `memory_context` prompt and a
 `memstrand://context` resource for standing instructions/preferences.
+`category`/`provenance` tool arguments are validated against the
+`Category`/`Provenance` enums; an invalid value is rejected with an
+actionable error (listing the valid values) instead of a raw stack trace,
+same for any other tool-call failure — MCP clients get an error message
+they can act on, not just "internal error".
 
 **OpenAI-compatible proxy** (`/v1`): `GET /models`, `POST
 /chat/completions` (streaming and non-streaming) — injects a `context()`
 block into the system message and logs both sides of the conversation,
-then forwards to `MEMSTRAND_LLM_BASE_URL`.
+then forwards to `MEMSTRAND_LLM_BASE_URL`. Streaming responses forward the
+upstream's error status verbatim (e.g. a 429 or 500 from your local LLM
+server reaches the client as that same status, not a generic 502) rather
+than masking it.
 
 ## Security notes
 
 - Binds to `127.0.0.1` by default. A non-loopback `MEMSTRAND_HOST` refuses
-  to start unless `MEMSTRAND_TOKEN` is set.
+  to start unless `MEMSTRAND_TOKEN` is set. With a token set, this now
+  works end-to-end for MCP as well as REST/the proxy — `/mcp` enforces the
+  same bearer-token check as `/api` and `/v1` on a non-loopback bind.
 - When loopback, requests with an untrusted `Host` header are rejected
-  (DNS-rebinding guard).
+  (DNS-rebinding guard). When bound to a specific non-loopback host or
+  address (not `0.0.0.0`/`::`), the same `Host` check applies: it must
+  match the bind host or the host of an allowed origin. A wildcard bind
+  (`0.0.0.0`/`::`) has no single "own Host" to check against, so this
+  check is skipped for it (the Origin/token checks still apply).
 - `/api`, `/mcp`, and `/v1` require `Authorization: Bearer
   <MEMSTRAND_TOKEN>` on every request if a token is configured.
 - Mutating requests (anything but `GET`/`HEAD`/`OPTIONS`) with a
-  cross-origin `Origin` header are rejected — a CSRF guard for
-  browser-based clients (the web UI, Open WebUI).
+  cross-origin `Origin` (or Referer-derived origin) header are rejected —
+  a CSRF guard for browser-based clients (the web UI, Open WebUI). Set
+  `MEMSTRAND_ALLOWED_ORIGINS` (comma-separated) to trust additional
+  browser origins beyond the daemon's own host:port — e.g. the MCP
+  inspector's dev-server origin, or the web UI's origin when accessing a
+  non-loopback-bound daemon over the LAN — on top of, not instead of, the
+  loopback/token checks. **There is no same-origin-by-Host fallback**: an
+  Origin/Referer that merely matches the request's own `Host` header is
+  *not* automatically trusted — that was a DNS-rebinding hole (an
+  attacker who controls DNS, or a malicious page the victim's browser
+  resolves, controls both headers). It must be the daemon's own origin or
+  explicitly listed in `MEMSTRAND_ALLOWED_ORIGINS`. Requests with neither
+  header (the CLI, MCP clients, hooks) are unaffected — the bearer token
+  is still mandatory for them. `MEMSTRAND_ALLOWED_ORIGINS` entries are
+  strictly validated at startup (`scheme://host[:port]`, `http`/`https`
+  only, no path/query/fragment, not `null`/`*`) — a malformed entry makes
+  the daemon refuse to start with an error naming it.
+- The daemon sends security headers on every response (`X-Frame-Options:
+  DENY`, a restrictive `Content-Security-Policy`, etc.) to harden the web
+  UI and REST/MCP endpoints against being framed or loaded cross-origin.
+- If the CLI, a Claude Code hook, or stdio `memstrand mcp` finds a daemon
+  already running but the daemon rejects the client's `MEMSTRAND_TOKEN`
+  (missing or wrong), it fails fast with a clear "set MEMSTRAND_TOKEN"
+  message instead of silently falling back to opening the stores itself
+  (which would be a second, unscoped writer). Hooks log this — and
+  anything else that goes wrong — to `{MEMSTRAND_HOME}/hook.log` rather
+  than failing silently inside the Claude Code hook pipeline.
+- The daemon starts even if the configured embedding backend is
+  unreachable (e.g. Ollama isn't running yet) — it doesn't block startup
+  on a dependency. The first operation that actually needs an embedding
+  (`remember`, `recall`, ingest, etc.) reports a clear `embedding backend
+  unreachable` error instead of hanging or crashing the daemon.
 - **Scope is an LLM-facing guarantee, not a browse-time one.** The hard
   task/host scope filter (the Playwright-bug fix) applies to everything
   that can end up in front of a model or an agent: `recall()`, `context()`,

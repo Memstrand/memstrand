@@ -56,6 +56,11 @@ memory store safely. `memstrand.client.get_memory()` returns a
 `RemoteMemory` (same method surface, talks to the daemon over REST) if a
 daemon is reachable, else falls back to a local `Memory()` — this is how the
 CLI and hooks avoid corrupting a daemon's state when both might run at once.
+`Memory.__init__` constructs the vector store eagerly and raises
+`StoreLocked` immediately if another process already holds the on-disk
+Qdrant lock for that `MEMSTRAND_HOME` — `serve()` and the CLI/client both
+turn that into one clean error message and exit, rather than racing the
+first process's stores or crashing on a raw Qdrant lock string.
 
 ## Write path
 
@@ -74,6 +79,13 @@ LLM, checks each candidate against similar existing memories with a second
 pattern), and promotes survivors with `supersedes` or `contradicts` edges
 as needed. Nothing is ever silently deleted — corrections and
 contradictions are additive edges, and the old atom stays queryable.
+Distillation only promotes content from **user** turns into global
+(task-less) standing instructions/preferences — assistant turns can still
+become scoped memories, but never silently become something the agent
+"told itself" to always do. Standing instructions are further restricted
+to trusted provenance (`explicit_statement`, `validated`, or `corrected`)
+— an `inferred`, `observed`, or `imported` atom is never treated as a
+standing instruction, however confident the extraction was.
 
 ## Read path (`recall()`)
 

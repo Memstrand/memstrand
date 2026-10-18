@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memstrand"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local-first typed memory for AI agents. Zero API keys."
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,21 +41,26 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "pydantic>=2.0",
+    "pydantic>=2.12",         # mcp>=2 requires pydantic>=2.12.0 itself
     "qdrant-client>=1.10",
-    "fastembed>=0.3",         # local ONNX embeddings, no torch, no API key
+    "fastembed>=0.4",         # local ONNX embeddings, no torch, no API key; 0.4.0 is the first release with fastembed.rerank.cross_encoder (used by Reranker)
     "httpx>=0.27",            # OpenAI-compatible local LLM endpoint
-    "mcp>=2,<3",                 # MCP server (v2 MCPServer API)
+    "mcp>=2,<3",                 # MCP server (v2 MCPServer API); 2.0.0 already has MCPServer, streamable_http_app(host=...), and mcp.server.mcpserver.exceptions.ToolError
     "pyyaml>=6.0",
     "starlette>=0.37",        # server.py builds the ASGI app directly (today only a transitive dep of mcp)
-    "uvicorn>=0.30",          # server.py runs uvicorn directly (today only a transitive dep of mcp)
+    "uvicorn>=0.31.1",        # server.py runs uvicorn directly; mcp>=2 requires uvicorn>=0.31.1 itself
 ]
 
 [project.optional-dependencies]
-kuzu = ["kuzu==0.11.3"]      # pinned: upstream archived after Oct 2025 acquisition (MIT); sqlite is the default graph backend
+# pinned: upstream archived after Oct 2025 acquisition (MIT); sqlite is the
+# default graph backend. kuzu 0.11.3 ships cp313 wheels (macOS arm64/x86_64,
+# manylinux_2_28) but no cp314 wheels, and its sdist doesn't build on 3.14 —
+# so on 3.14 the `kuzu`/`all` extra is simply unavailable rather than trying
+# (and failing) to build from source.
+kuzu = ["kuzu==0.11.3; python_version < \"3.14\""]
 pdf = ["pypdf>=4.0"]         # PDF ingestion
 all = ["memstrand[kuzu,pdf]"]
-dev = ["pytest>=8.0", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.17,<0.18"]
 
 [project.scripts]
 memstrand = "memstrand.cli:main"
@@ -73,3 +78,8 @@ packages = ["src/memstrand"]
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: real-process tests (tests/integration) that spawn subprocesses and bind real sockets; see tests/integration/conftest.py for the collection gate that keeps these out of a bare `pytest -q`",
+]

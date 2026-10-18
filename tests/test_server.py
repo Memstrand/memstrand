@@ -248,6 +248,28 @@ def test_turns_missing_fields_400(mem, tmp_path):
         assert resp.status_code == 400
 
 
+def test_turns_invalid_role_400(mem, tmp_path):
+    app = create_app(mem, _settings(tmp_path))
+    with _client(app) as client:
+        resp = client.post(
+            "/api/turns", json={"session_id": "s1", "role": "pirate", "content": "arr"}
+        )
+        assert resp.status_code == 400
+        assert "pirate" in resp.json().get("error", resp.text)
+
+        # batch form: one bad role among good ones also rejects with 400
+        resp = client.post(
+            "/api/turns",
+            json={
+                "turns": [
+                    {"session_id": "s1", "role": "user", "content": "fine"},
+                    {"session_id": "s1", "role": "system-ish", "content": "bad"},
+                ]
+            },
+        )
+        assert resp.status_code == 400
+
+
 # -- context / export / import / ingest ----------------------------------------------
 
 
@@ -517,6 +539,25 @@ def test_mcp_tool_rejects_invalid_category(mem):
         with pytest.raises(ToolError) as exc_info:
             await mcp.call_tool("remember", {"content": "x", "category": "bogus"})
         assert "bogus" in str(exc_info.value.__cause__)
+
+    import anyio
+
+    anyio.run(_run)
+
+
+def test_mcp_log_turn_rejects_invalid_role(mem):
+    """`log_turn`'s `role` parameter is typed `Literal["user", "assistant",
+    "system", "tool"]` -- the MCP SDK validates tool arguments against the
+    function signature before the tool body ever runs, so an invalid role
+    is rejected before `mem.log_turn` is called at all."""
+    mcp = build_mcp(lambda: mem)
+
+    async def _run():
+        with pytest.raises(Exception) as exc_info:
+            await mcp.call_tool(
+                "log_turn", {"session_id": "s1", "role": "pirate", "content": "arr"}
+            )
+        assert "pirate" in str(exc_info.value) or "pirate" in str(exc_info.value.__cause__)
 
     import anyio
 

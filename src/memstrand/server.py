@@ -16,16 +16,39 @@ without corrupting each other's state. This module exposes one shared
 All blocking `Memory` calls from async handlers go through
 `run_in_threadpool` so one slow embed/LLM call never stalls the event
 loop for other clients.
+
+Env vars read directly by this module (beyond `Settings`/`MEMSTRAND_TOKEN`):
+
+  * `MEMSTRAND_ALLOWED_ORIGINS` — comma-separated list of extra Origin
+    values trusted for the CSRF/same-origin check on mutating `/api`,
+    `/mcp`, `/v1` requests, on top of the daemon's own origin(s). Each
+    entry must be exactly `scheme://host[:port]` (http or https, no
+    path/query/fragment, not `null`/`*`) — anything else, including a
+    bare host or wildcard, makes the daemon refuse to start with a clear
+    error naming the bad entry (fail closed, see `_parse_allowed_origins`).
+    Useful for trusted local tools that proxy from a different port
+    (e.g. the MCP inspector at `http://localhost:6274`) or for reaching
+    the web UI from elsewhere on the LAN when bound to a non-loopback
+    host: add that origin, e.g. `MEMSTRAND_ALLOWED_ORIGINS=http://192.168.1.5:7777`.
+    Has no effect on the mandatory bearer token. Note: there is no
+    same-origin-by-Host fallback — an Origin/Referer that merely matches
+    the request's own Host header is NOT automatically trusted (that was
+    a DNS-rebinding hole: an attacker who controls both headers could
+    forge a match). Requests with neither Origin nor Referer (CLI, MCP
+    clients, hooks) are unaffected by this check; the token is still
+    mandatory for them.
 """
 
 from __future__ import annotations
 
 import contextlib
 import functools
+import hmac
 import importlib.resources
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -36,6 +59,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
@@ -50,8 +74,8 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 
 from . import __version__
-from .api import Memory
-from .config import Settings, get_settings
+from .api import Memory, StoreLocked
+from .config import ConfigError, Settings, get_settings
 from .mcp_server import build_mcp
 from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
@@ -59,10 +83,16 @@ from .schema import Category, Provenance
 logger = logging.getLogger("memstrand.server")
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# Hosts that mean "listen on every interface" -- there is no single "our
+# own Host header" to validate against when bound this way, so the
+# Host-header check below is skipped for these (the Origin/token checks
+# still apply).
+_WILDCARD_HOSTS = {"0.0.0.0", "::"}
 _PROTECTED_PREFIXES = ("/api", "/mcp", "/v1")
 _UPSTREAM_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=600.0, pool=600.0)
 _CATEGORY_VALUES = [c.value for c in Category]
 _PROVENANCE_VALUES = [p.value for p in Provenance]
+_VALID_ROLES = ("user", "assistant", "system", "tool")
 
 
 def _parse_category(value: str) -> Category:
@@ -84,11 +114,80 @@ def _origin_from_referer(referer: str) -> str | None:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _parse_allowed_origins(raw: str) -> frozenset[str]:
+    """Strictly parse `MEMSTRAND_ALLOWED_ORIGINS` into a set of normalized
+    `scheme://host[:port]` origins, or raise `ValueError` naming the first
+    bad entry. Called eagerly from `create_app()` (not from
+    `_SecurityMiddleware.__init__`, which Starlette only instantiates
+    lazily on the first request -- too late to make the daemon "refuse to
+    start") so a malformed value fails fast and loud instead of silently
+    widening (or being ignored and narrowing) the trust boundary.
+
+    Each entry is stripped of surrounding whitespace and any trailing
+    "/", then lowercased in its scheme+host (ports and paths are
+    case-sensitive in general, but we also forbid paths here, so only
+    scheme+host need normalizing). An entry is valid only if:
+      * scheme is exactly "http" or "https"
+      * netloc (host[:port]) is non-empty
+      * there is no path (beyond the trailing "/" already stripped), no
+        query string, and no fragment
+      * the literal value isn't "null" (the Origin a sandboxed/opaque
+        browser context sends, never a real origin to trust) or "*"
+        (never a valid Origin value; accepting it would trust everything)
+    """
+    origins: set[str] = set()
+    for entry in raw.split(","):
+        candidate = entry.strip()
+        if not candidate:
+            continue
+        normalized = candidate.removesuffix("/")
+        lowered = normalized.lower()
+        if lowered in ("null", "*"):
+            raise ValueError(
+                f"MEMSTRAND_ALLOWED_ORIGINS entry {candidate!r} is not allowed "
+                "(expected a concrete scheme://host[:port] origin)"
+            )
+        parts = urlsplit(normalized)
+        scheme = parts.scheme.lower()
+        netloc = parts.netloc.lower()
+        if (
+            scheme not in ("http", "https")
+            or not netloc
+            or parts.path
+            or parts.query
+            or parts.fragment
+        ):
+            raise ValueError(
+                f"MEMSTRAND_ALLOWED_ORIGINS entry {candidate!r} is not a valid origin "
+                "(expected exactly scheme://host[:port], scheme http or https, "
+                "no path/query/fragment)"
+            )
+        origins.add(f"{scheme}://{netloc}")
+    return frozenset(origins)
+
+
 def _parse_provenance(value: str) -> Provenance:
     try:
         return Provenance(value)
     except ValueError:
         raise ValueError(f"invalid provenance {value!r}; must be one of {_PROVENANCE_VALUES}") from None
+
+
+def _parse_bounded_int(value, *, name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    """Parse a REST `limit`/`offset`-style parameter (query param or JSON
+    body value) into a bounds-checked int, raising ValueError (-> 400) on
+    anything malformed or out of range instead of letting a bad `limit`
+    silently become a huge/negative query."""
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer") from None
+    if parsed < minimum or (maximum is not None and parsed > maximum):
+        bound = f">= {minimum}" + (f" and <= {maximum}" if maximum is not None else "")
+        raise ValueError(f"{name} must be {bound}")
+    return parsed
 
 
 async def _body(request: Request) -> dict:
@@ -119,6 +218,8 @@ def _json_errors(fn: Callable[[Request], Awaitable[Response]]) -> Callable[[Requ
             return JSONResponse({"error": str(e)}, status_code=503)
         except ValueError as e:
             return JSONResponse({"error": str(e)}, status_code=400)
+        except FileNotFoundError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
         except KeyError as e:
             return JSONResponse({"error": f"not found: {e}"}, status_code=404)
         except Exception as e:  # last resort: never crash the daemon on a handler bug
@@ -132,18 +233,59 @@ def _json_errors(fn: Callable[[Request], Awaitable[Response]]) -> Callable[[Requ
 # -- and CSRF/DNS-rebinding guards for the mutating surface -------------------
 
 
+_SECURITY_HEADERS = (
+    (b"x-frame-options", b"DENY"),
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"no-referrer"),
+)
+# The web UI (/) is the only route that legitimately serves its own inline
+# <script>/<style> (see web/index.html) and needs `self` for same-origin
+# fetches to /api; everything else (JSON/SSE/MCP) gets the tightest policy.
+_CSP_INDEX = (
+    b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
+    b"style-src 'self' 'unsafe-inline'; frame-ancestors 'none'"
+)
+_CSP_DEFAULT = b"frame-ancestors 'none'"
+
+
 class _SecurityMiddleware:
     """Pure-ASGI (not BaseHTTPMiddleware) so SSE/streamable-HTTP bodies on
     /mcp and /v1 pass through untouched instead of being buffered."""
 
-    def __init__(self, app, settings: Settings, token: str | None):
+    def __init__(self, app, settings: Settings, token: str | None, extra_origins: frozenset[str] = frozenset()):
         self.app = app
         self.token = token
         self.is_loopback = settings.server_host in _LOOPBACK_HOSTS
+        self.is_wildcard_bind = settings.server_host in _WILDCARD_HOSTS
         self.own_origins = {
             f"http://127.0.0.1:{settings.server_port}",
             f"http://localhost:{settings.server_port}",
+            f"http://[::1]:{settings.server_port}",
         }
+        if not self.is_loopback and not self.is_wildcard_bind:
+            # Non-loopback binds are reachable from other hosts on the LAN;
+            # the configured host is as much "our own origin" as localhost
+            # is in loopback mode. A bearer token is mandatory to even get
+            # this far (enforced in create_app()), so this isn't widening
+            # the trust boundary.
+            self.own_origins.add(f"http://{settings.server_host}:{settings.server_port}")
+        # `extra_origins` is parsed and validated eagerly by
+        # `_parse_allowed_origins()` in `create_app()` -- never re-read
+        # MEMSTRAND_ALLOWED_ORIGINS here, since Starlette only constructs
+        # this middleware lazily (on first request), which would be too
+        # late to make a malformed value fail the daemon's startup.
+        self.extra_origins = extra_origins
+        # Host-header allowlist for non-loopback, non-wildcard binds (e.g.
+        # MEMSTRAND_HOST=192.168.1.5): the configured bind host, plus the
+        # host portion of every trusted origin (own + extra). A wildcard
+        # bind (0.0.0.0/::) has no single "our own Host" to check against,
+        # so it's exempt -- the Origin/token checks still apply to it.
+        self._allowed_hosts = {settings.server_host} | {
+            urlsplit(o).hostname for o in (self.own_origins | self.extra_origins)
+        }
+
+    def _origin_allowed(self, origin: str) -> bool:
+        return origin in self.own_origins or origin in self.extra_origins
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http":
@@ -153,17 +295,33 @@ class _SecurityMiddleware:
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers") or []}
         path = scope.get("path", "")
         protected = path.startswith(_PROTECTED_PREFIXES)
+        send = self._wrap_send(send, path)
 
         if self.is_loopback:
             hostname = headers.get("host", "").split(":")[0]
             if hostname not in _LOOPBACK_HOSTS:
                 await self._reject(send, "untrusted Host header", 403)
                 return
+        elif not self.is_wildcard_bind:
+            # A specific non-loopback bind (e.g. MEMSTRAND_HOST=192.168.1.5)
+            # has exactly one legitimate Host value (plus any configured
+            # MEMSTRAND_ALLOWED_ORIGINS hosts) -- anything else is a
+            # DNS-rebinding attempt (a public DNS name resolving to this
+            # host, used to smuggle a browser request past same-origin
+            # checks). A wildcard bind (0.0.0.0/::) has no single value to
+            # check against, so it's exempt from this specific guard; the
+            # mandatory token and the Origin check below still apply.
+            hostname = headers.get("host", "").split(":")[0]
+            if hostname not in self._allowed_hosts:
+                await self._reject(send, "untrusted Host header", 403)
+                return
 
         if protected:
-            if self.token is not None and headers.get("authorization") != f"Bearer {self.token}":
-                await self._reject(send, "missing or invalid bearer token", 401)
-                return
+            if self.token is not None:
+                presented = headers.get("authorization", "")
+                if not hmac.compare_digest(presented, f"Bearer {self.token}"):
+                    await self._reject(send, "missing or invalid bearer token", 401)
+                    return
             method = scope.get("method", "GET")
             if method not in ("GET", "HEAD", "OPTIONS"):
                 origin = headers.get("origin")
@@ -176,11 +334,25 @@ class _SecurityMiddleware:
                     referer = headers.get("referer")
                     if referer:
                         origin = _origin_from_referer(referer)
-                if origin is not None and origin not in self.own_origins:
+                if origin is not None and not self._origin_allowed(origin):
                     await self._reject(send, "cross-origin request rejected", 403)
                     return
 
         await self.app(scope, receive, send)
+
+    @staticmethod
+    def _wrap_send(send, path: str):
+        csp = _CSP_INDEX if path == "/" else _CSP_DEFAULT
+
+        async def wrapped_send(message):
+            if message["type"] == "http.response.start":
+                response_headers = list(message.get("headers") or [])
+                response_headers.extend(_SECURITY_HEADERS)
+                response_headers.append((b"content-security-policy", csp))
+                message = {**message, "headers": response_headers}
+            await send(message)
+
+        return wrapped_send
 
     @staticmethod
     async def _reject(send, message: str, status: int) -> None:
@@ -240,6 +412,7 @@ async def _recall(request: Request) -> Response:
     if not query:
         raise ValueError("query is required")
     categories = [_parse_category(c) for c in data["categories"]] if data.get("categories") else None
+    limit = _parse_bounded_int(data.get("limit", 10), name="limit", default=10, minimum=1, maximum=1000)
     mem: Memory = request.app.state.mem
     results = await run_in_threadpool(
         mem.recall,
@@ -248,7 +421,7 @@ async def _recall(request: Request) -> Response:
         data.get("task_id"),
         data.get("host"),
         categories,
-        int(data.get("limit", 10)),
+        limit,
         bool(data.get("include_superseded", False)),
     )
     return JSONResponse({"results": results})
@@ -263,19 +436,19 @@ async def _atoms_list(request: Request) -> Response:
     # absent task_id = no filter (None); present-but-empty = global only ("")
     task_id = params.get("task_id")
     host = params.get("host") or None
-    limit = int(params.get("limit", 100))
-    offset = int(params.get("offset", 0))
+    limit = _parse_bounded_int(params.get("limit"), name="limit", default=100, minimum=0, maximum=1000)
+    offset = _parse_bounded_int(params.get("offset"), name="offset", default=0, minimum=0)
     mem: Memory = request.app.state.mem
 
-    def _query() -> tuple[list[dict], int]:
-        all_atoms = mem.graph.list_atoms(category=category, task_id=task_id, host=host, limit=10**9, offset=0)
-        total = len(all_atoms)
-        page = all_atoms[offset : offset + limit]
-        superseded = mem.graph.superseded_ids([a.id for a in page])
-        atoms = [Memory.atom_to_dict(a, superseded=a.id in superseded) for a in page]
-        return atoms, total
-
-    atoms, total = await run_in_threadpool(_query)
+    # Contract with Memory.list_page (api.py): returns the page of atom
+    # dicts (same shape as Memory.list, incl. `superseded`) plus the total
+    # count matching the filters, both computed under Memory._lock in one
+    # pass -- unlike the old approach here, this never touches mem.graph.*
+    # directly and never materializes the full unfiltered table just to
+    # count it.
+    atoms, total = await run_in_threadpool(
+        mem.list_page, category=category, task_id=task_id, host=host, limit=limit, offset=offset
+    )
     return JSONResponse({"atoms": atoms, "total": total})
 
 
@@ -334,6 +507,8 @@ async def _turns(request: Request) -> Response:
             session_id, role, content = t.get("session_id"), t.get("role"), t.get("content")
             if not session_id or not role or content is None:
                 raise ValueError("each turn requires session_id, role, content")
+            if role not in _VALID_ROLES:
+                raise ValueError(f"invalid role {role!r}; must be one of {list(_VALID_ROLES)}")
             mem.log_turn(session_id, role, content, task_id=t.get("task_id"))
 
     await run_in_threadpool(_run)
@@ -545,21 +720,53 @@ async def _v1_chat_completions(request: Request) -> Response:
             media_type=resp.headers.get("content-type", "application/json"),
         )
 
+    # Open the upstream request ourselves (instead of `async with
+    # client.stream(...)`) so we can inspect the status code *before*
+    # deciding whether the client gets a StreamingResponse at all. Most
+    # OpenAI-compatible servers return a plain JSON error body (not SSE)
+    # for a non-2xx response even when the request asked for `stream:
+    # true` -- if we blindly wrapped that in a 200 text/event-stream, the
+    # client would get a "stream" containing one chunk of raw JSON instead
+    # of a real error it can detect.
+    upstream_request = client.build_request("POST", url, headers=headers, json=body, timeout=_UPSTREAM_TIMEOUT)
+    try:
+        resp = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError as e:
+        return JSONResponse({"error": f"upstream unreachable: {e}"}, status_code=502)
+
+    if not (200 <= resp.status_code < 300):
+        error_body = await resp.aread()
+        await resp.aclose()
+        return Response(
+            error_body, status_code=resp.status_code,
+            media_type=resp.headers.get("content-type", "application/json"),
+        )
+
     async def _stream_and_log():
         collected: list[str] = []
         buffer = b""
+        ok = False
         try:
-            async with client.stream("POST", url, headers=headers, json=body, timeout=_UPSTREAM_TIMEOUT) as resp:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
-                    buffer += chunk
-                    events, buffer = _sse_events(buffer)
-                    for event in events:
-                        collected.append(_extract_delta_content(event))
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+                buffer += chunk
+                events, buffer = _sse_events(buffer)
+                for event in events:
+                    collected.append(_extract_delta_content(event))
+            ok = True
         except httpx.HTTPError as e:
-            yield f'data: {{"error": "upstream unreachable: {e}"}}\n\n'.encode()
+            # Upstream died mid-stream, after we already committed to a 200
+            # text/event-stream response -- the only way left to tell the
+            # client something went wrong is a well-formed SSE error event
+            # (json.dumps, not an f-string: `e`'s text can contain quotes
+            # that would otherwise produce invalid JSON) followed by the
+            # same [DONE] sentinel a normal stream ends with.
+            payload = json.dumps({"error": f"upstream stream failed: {e}"})
+            yield f"data: {payload}\n\n".encode()
+            yield b"data: [DONE]\n\n"
         finally:
-            if not disable and collected:
+            await resp.aclose()
+            if ok and not disable and collected:
                 await run_in_threadpool(mem.log_turn, session_id, "assistant", "".join(collected), task_id)
 
     return StreamingResponse(_stream_and_log(), media_type="text/event-stream")
@@ -647,12 +854,41 @@ def create_app(
             f"refusing to start on non-loopback host {settings.server_host!r} "
             "without MEMSTRAND_TOKEN set"
         )
+    # Parsed eagerly, here, rather than inside `_SecurityMiddleware.__init__`:
+    # Starlette only constructs middleware lazily (on the first request),
+    # so validating there wouldn't make a malformed MEMSTRAND_ALLOWED_ORIGINS
+    # fail the daemon's *startup* -- it would instead surface as a 500 (or
+    # worse, pass silently) on whatever request happens to arrive first.
+    # Raises ValueError (caught by `serve()`/the CLI like `ConfigError`)
+    # naming the bad entry -- fail closed rather than starting with a
+    # silently-narrowed or silently-widened trust boundary.
+    extra_origins = _parse_allowed_origins(os.environ.get("MEMSTRAND_ALLOWED_ORIGINS", ""))
 
     mcp_server = build_mcp(lambda: mem)
     # streamable_http_path="/" so Mount("/mcp", ...) doesn't double the
     # path segment; passed here (not the constructor) in the v2 SDK.
     # Lazily creates the session manager.
-    mcp_asgi_app = mcp_server.streamable_http_app(streamable_http_path="/")
+    #
+    # `host=` matters: the v2 SDK auto-enables its own DNS-rebinding
+    # protection (rejecting requests whose Host header isn't in its
+    # allowlist) whenever `host` is loopback -- and defaults `host` to
+    # "127.0.0.1" if we don't pass it, regardless of what memstrand is
+    # actually bound to. Leaving that default in place broke non-loopback
+    # mode outright: a legitimate remote client's Host header (its LAN
+    # IP/hostname) never matches "127.0.0.1"/"localhost"/"[::1]" and the
+    # SDK rejected it with 421 before our own middleware ever saw the
+    # request. So: pass the real bind host through, and for non-loopback
+    # binds explicitly disable the SDK's own protection -- memstrand's
+    # `_SecurityMiddleware` (Origin check) plus the mandatory
+    # MEMSTRAND_TOKEN (enforced above) are the guard there instead. For
+    # loopback binds we want the SDK's protection to stay on, so leave
+    # `transport_security` unset and let it auto-enable.
+    mcp_transport_security = (
+        None if is_loopback else TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    )
+    mcp_asgi_app = mcp_server.streamable_http_app(
+        streamable_http_path="/", host=settings.server_host, transport_security=mcp_transport_security
+    )
     session_manager = mcp_server.session_manager
 
     stop_event = threading.Event()
@@ -717,7 +953,9 @@ def create_app(
     app = Starlette(
         routes=routes,
         lifespan=lifespan,
-        middleware=[Middleware(_SecurityMiddleware, settings=settings, token=token)],
+        middleware=[
+            Middleware(_SecurityMiddleware, settings=settings, token=token, extra_origins=extra_origins)
+        ],
     )
     app.state.mem = mem
     app.state.settings = settings
@@ -735,16 +973,35 @@ def serve(
     block in uvicorn until interrupted. The daemon entry point for
     `python -m memstrand.server`, the CLI's `memstrand serve`, etc.
     `scheduler=False` disables the background consolidate()/improve() loop
-    (the CLI's `memstrand serve --no-scheduler`)."""
-    settings = get_settings()
-    if host is not None or port is not None:
-        settings = replace(
-            settings,
-            server_host=host or settings.server_host,
-            server_port=port or settings.server_port,
-        )
-    mem = mem or Memory(settings=settings)
-    app = create_app(mem, settings, start_scheduler=scheduler)
+    (the CLI's `memstrand serve --no-scheduler`).
+
+    Startup failures -- `ConfigError` (a bad `MEMSTRAND_*` env var),
+    `StoreLocked` (another process, almost always a second daemon, already
+    holds this home's Qdrant store), or the plain `RuntimeError`/`ValueError`
+    `create_app()` raises for a missing `MEMSTRAND_TOKEN` on a non-loopback
+    bind or a malformed `MEMSTRAND_ALLOWED_ORIGINS` -- are caught here and
+    printed as one clean `error: ...` line to stderr with exit code 1: no
+    ready banner (it hasn't started), no traceback."""
+    try:
+        settings = get_settings()
+        if host is not None or port is not None:
+            settings = replace(
+                settings,
+                server_host=host or settings.server_host,
+                server_port=port or settings.server_port,
+            )
+        owns_mem = mem is None
+        try:
+            mem = mem or Memory(settings=settings)
+            app = create_app(mem, settings, start_scheduler=scheduler)
+        except Exception:
+            if owns_mem and mem is not None:
+                with contextlib.suppress(Exception):
+                    mem.close()
+            raise
+    except (ConfigError, StoreLocked, RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     url = settings.server_url
     print(f"memstrand daemon listening on {url}")

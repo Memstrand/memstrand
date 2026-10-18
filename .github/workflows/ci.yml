@@ -22,25 +22,60 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # kuzu==0.11.3 (the `kuzu` / `all` extra) is pinned upstream (see
-      # pyproject.toml) and its wheel coverage for 3.13 isn't guaranteed
-      # on every platform yet. Rather than let a missing wheel fail the
-      # whole job, 3.13 installs without the `kuzu` extra; the graph
-      # store tests already `pytest.importorskip("kuzu")`, so they're
-      # skipped (not failed) wherever kuzu isn't installed.
-      - name: Install (with kuzu)
-        if: matrix.python-version != '3.13'
+      # kuzu==0.11.3 (the `kuzu` / `all` extra, pinned in pyproject.toml)
+      # ships cp313 wheels for both macOS (arm64 + x86_64) and manylinux
+      # (2_28, aarch64 + x86_64), so every cell in this matrix can install
+      # the full `[dev,all]` extra set — no more 3.13 special-case.
+      - name: Install
         run: pip install -e '.[dev,all]'
 
-      - name: Install (no kuzu — see comment above)
-        if: matrix.python-version == '3.13'
-        run: pip install -e '.[dev,pdf]'
-
       - name: Lint
-        run: ruff check src tests
+        run: ruff check .
 
       - name: Test
         run: pytest -q
+
+      # Guard against ambient-environment leakage (e.g. a runner/shell
+      # exporting MEMSTRAND_TOKEN or an HTTPS_PROXY) regressing test
+      # hermeticity (see tests/conftest.py). Only needs to run once, not
+      # once per matrix cell.
+      - name: Test (hermeticity check — junk env must not leak in)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: pytest -q
+        env:
+          MEMSTRAND_TOKEN: junk
+          MEMSTRAND_PORT: "1"
+          HTTPS_PROXY: http://127.0.0.1:9
+
+  # Real-process integration suite (tests/integration): spawns real
+  # `memstrand serve`/CLI/`mcp_server` subprocesses and binds real sockets
+  # (a stub OpenAI-compatible server) instead of mocking the process
+  # boundary — see tests/integration/__init__.py. `timeout-minutes` is a
+  # safety margin for a job made of subprocess-heavy, real-wire tests
+  # rather than a hard expectation of actually taking that long locally
+  # (~1 minute).
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e '.[dev,all]'
+
+      - name: Integration tests
+        run: |
+          if [ -d tests/integration ]; then
+            pytest -q tests/integration
+          else
+            echo "tests/integration not present yet — skipping"
+          fi
 
   build:
     name: build + twine check

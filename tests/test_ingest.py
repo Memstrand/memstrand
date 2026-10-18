@@ -97,6 +97,15 @@ class FakeMemory:
             del self.graph.atoms[i]
         return len(ids)
 
+    def _graph_add_edge(self, edge: MemoryEdge) -> None:
+        # Real `Memory._graph_add_edge` is just a locked wrapper around
+        # `self.graph.add_edge` (deep-review fix: ingest no longer holds
+        # Memory._lock for its whole run, so wikilink edges go through
+        # this small locked helper instead of touching `mem.graph`
+        # directly). The fake has no real lock to exercise, so it just
+        # delegates.
+        self.graph.add_edge(edge)
+
 
 # -- chunk_markdown --------------------------------------------------------------
 
@@ -300,20 +309,29 @@ def test_ingest_pdf_skipped_without_pypdf(tmp_path, monkeypatch):
 
 
 def test_ingest_bad_file_does_not_abort_run(tmp_path, monkeypatch):
+    import os
+
     vault = tmp_path / "vault"
     vault.mkdir()
     (vault / "good.md").write_text("# Good\n\nThis file should still be ingested just fine.\n")
     (vault / "bad.md").write_text("# Bad\n\nThis file will fail to read in this simulated test.\n")
     mem = FakeMemory(home=tmp_path / "home")
 
-    original_read_bytes = Path.read_bytes
+    # round-3 TOCTOU fix: ingest.py now reads via `os.open()` (openat-style,
+    # `O_NOFOLLOW` + `dir_fd` chaining -- see `_open_regular_strict`) instead
+    # of `Path.open()`/`Path.read_bytes()`, so the simulated-failure hook
+    # patches `os.open` now instead, intercepting only the final-component
+    # open call (identified by its bare relative name, "bad.md").
+    original_os_open = os.open
 
-    def flaky_read_bytes(self):
-        if self.name == "bad.md":
+    def flaky_open(path, flags, mode=0o777, *, dir_fd=None):
+        if path == "bad.md":
             raise OSError("simulated failure")
-        return original_read_bytes(self)
+        if dir_fd is None:
+            return original_os_open(path, flags, mode)
+        return original_os_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    monkeypatch.setattr(os, "open", flaky_open)
 
     report = ingest_path(mem, vault)
 

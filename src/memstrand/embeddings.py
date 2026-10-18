@@ -19,6 +19,17 @@ if TYPE_CHECKING:
     from .config import Settings
 
 
+class EmbeddingUnavailable(RuntimeError):
+    """The configured embedding backend didn't answer (connection refused,
+    timed out, or returned an error status). This is transient and holds
+    no permanent failed state anywhere: `Memory` never caches this as a
+    terminal failure, so a later call (once the backend is up) retries
+    from scratch and succeeds normally. Raised instead of letting the raw
+    httpx exception escape, so `memstrand serve` can start with the
+    embedding backend down and only the first real embed/recall/remember
+    call surfaces a clear, actionable error."""
+
+
 class FastEmbedder:
     """Lazy-loaded fastembed `TextEmbedding`. Importing/constructing this
     class never touches the network or loads an ONNX model — that only
@@ -53,14 +64,28 @@ class OpenAIEmbedder:
         texts = list(texts)
         if not texts:
             return []
-        resp = httpx.post(
-            f"{self.base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": self.model, "input": texts},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return [row["embedding"] for row in resp.json()["data"]]
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/embeddings",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"model": self.model, "input": texts},
+                timeout=120,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            # Covers both transport failures (ConnectError, TimeoutException,
+            # ...) and HTTP error statuses (HTTPStatusError) -- either way the
+            # backend didn't give us an embedding, and there's nothing stored
+            # as a result of this call.
+            raise EmbeddingUnavailable(
+                f"embedding backend at {self.base_url} unreachable: {e}"
+            ) from e
+        try:
+            return [row["embedding"] for row in resp.json()["data"]]
+        except (KeyError, IndexError, ValueError) as e:
+            raise EmbeddingUnavailable(
+                f"embedding backend at {self.base_url} unreachable: malformed response: {e}"
+            ) from e
 
 
 def make_embedder(settings: Settings):

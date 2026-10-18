@@ -5,19 +5,52 @@ Change detection lives in a small JSON state file (sha256 per absolute
 path). Markdown gets heading-aware chunking with frontmatter `tags:` and
 Obsidian `[[wikilink]]` resolution into `related_to` graph edges; plain
 text and PDF get paragraph-based chunking.
+
+Filesystem-trust notes (round-3 hardening):
+
+- Regular files with `st_nlink > 1` (hardlinks) are skipped. A hardlink
+  living inside the ingest root to a file living outside it is a regular
+  file (`S_ISREG`) and passes the symlink-only containment check just
+  fine -- there's no symlink involved at all, so "does this path resolve
+  inside root" is true by construction even though the *inode* is shared
+  with an arbitrary file anywhere the ingesting user can read. We can't
+  tell, from the hardlink alone, which of its names is the "real" one the
+  user intended to expose, so the only safe move is to refuse to read it.
+  This is checked both up front (`os.lstat`/`os.stat`) and again,
+  atomically with the actual read, in `_open_regular_strict` below --
+  `st_nlink` can change between the two.
+- Validation (lstat, `S_ISREG`, containment) and the later read used to be
+  two separate path lookups a few lines apart, which is enough of a window
+  for a concurrent writer to swap the target between them (TOCTOU): drop
+  in a symlink to a victim file right after the check passes, swap back
+  right after the read. `_open_regular_strict` closes this by opening the
+  file (and every directory component between the ingest root and it)
+  with `O_NOFOLLOW` via `dir_fd`-chained `os.open()` calls (openat-style),
+  then re-validating the *opened fd's* `fstat()` -- regular file, nlink
+  1, same `(st_dev, st_ino)` as the earlier lstat -- before a single byte
+  is read. `O_NONBLOCK` is included so a FIFO swapped into the file's
+  place can't make the `open()` itself hang. `dir_fd`-based `os.open`/
+  `os.stat` are supported on both Linux and macOS (`os.supports_dir_fd`);
+  on a platform where they aren't, we fall back to a plain `O_NOFOLLOW`
+  open of the resolved path -- this still closes the final-component
+  swap race the reviewer's PoC exercises, just not a parent-directory
+  symlink swap mid-walk.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import re
+import stat
 import threading
 from pathlib import Path
 
 import yaml
 
+from .config import ensure_private_dir, secure_file
 from .schema import Category, MemoryEdge, Provenance, RelationType
 
 TEXT_EXTS = {".md", ".markdown", ".txt", ".rst", ".org"}
@@ -194,12 +227,145 @@ def _iter_files(root: Path):
     if root.is_file():
         yield root
         return
-    for dirpath, dirnames, filenames in os.walk(root):
+    # followlinks=False (the default, made explicit): never descend into a
+    # symlinked directory, regardless of where it points. Symlinked FILES
+    # still show up in `filenames` either way -- those are caught per-file
+    # in `ingest_path` (the "symlink outside root" check), since whether a
+    # file symlink is safe to follow depends on its resolved TARGET, not
+    # just the fact that it's a symlink.
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS)
         for name in sorted(filenames):
             if name.startswith("."):
                 continue
             yield Path(dirpath) / name
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """True if resolved `path` is `root` itself or somewhere underneath
+    it. Both must already be resolved (no symlinks, absolute)."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+class _FileTooLarge(Exception):
+    """Internal sentinel: `_read_capped_fd` hit the byte cap."""
+
+
+class _ToctouRace(Exception):
+    """A path's validated identity (regular file, nlink 1, dev/ino) no
+    longer matches what was opened -- or a path component turned out to
+    be a symlink at open time -- meaning something swapped the file (or a
+    parent directory) out from under us between validation and the read.
+    Callers treat this exactly like any other "unsafe, skip it" finding."""
+
+
+_HAS_DIR_FD = os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+
+
+def _open_regular_strict(base_dir: Path, abs_path: Path, expected: os.stat_result) -> int:
+    """Open `abs_path` (a descendant of `base_dir`) for reading, re-proving
+    -- atomically with the open itself, where the platform allows it --
+    everything the earlier `lstat`-based validation already claimed:
+
+      - every directory component between `base_dir` and the file is a
+        real directory, not a symlink (a parent directory swapped to a
+        symlink *after* `os.walk` listed it could otherwise walk the open
+        right out of the ingest root);
+      - the final component is a regular file, not a symlink
+        (`O_NOFOLLOW`);
+      - it's still the exact same file -- same `(st_dev, st_ino)`, and
+        still `st_nlink == 1` -- that `expected` (the caller's earlier
+        `lstat`/`stat`) described.
+
+    Returns an open read-only fd; the caller owns closing it. Raises
+    `_ToctouRace` for any of the above mismatches (treat as "skip, unsafe"),
+    or a plain `OSError` for ordinary IO failures (treat as an error).
+    """
+    rel_parts = abs_path.relative_to(base_dir).parts
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+
+    if _HAS_DIR_FD and rel_parts:
+        dir_fd = os.open(base_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in rel_parts[:-1]:
+                try:
+                    next_fd = os.open(
+                        part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.ELOOP:
+                        raise _ToctouRace(
+                            "parent directory replaced with a symlink during validation (TOCTOU)"
+                        ) from exc
+                    raise
+                os.close(dir_fd)
+                dir_fd = next_fd
+            try:
+                fd = os.open(
+                    rel_parts[-1], os.O_RDONLY | os.O_NOFOLLOW | nonblock, dir_fd=dir_fd
+                )
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise _ToctouRace(
+                        "file replaced with a symlink during validation (TOCTOU)"
+                    ) from exc
+                raise
+        finally:
+            os.close(dir_fd)
+    else:
+        # No dir_fd support on this platform: fall back to a plain
+        # O_NOFOLLOW open of the already-resolved path. This still closes
+        # the final-component swap race (the one the reviewer's PoC
+        # exercises), just not a parent-directory symlink swap mid-walk --
+        # the earlier `_is_within(path.resolve(), root)` containment check
+        # is the best guarantee available there.
+        try:
+            fd = os.open(str(abs_path), os.O_RDONLY | os.O_NOFOLLOW | nonblock)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise _ToctouRace(
+                    "file replaced with a symlink during validation (TOCTOU)"
+                ) from exc
+            raise
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise _ToctouRace("not a regular file")
+        if st.st_nlink != 1:
+            raise _ToctouRace("hardlinked file (st_nlink>1)")
+        if (st.st_dev, st.st_ino) != (expected.st_dev, expected.st_ino):
+            raise _ToctouRace("file changed during validation (TOCTOU)")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_capped_fd(fd: int, max_bytes: int) -> bytes:
+    """Read at most `max_bytes + 1` bytes from an already-open fd and
+    raise `_FileTooLarge` if that's not enough to hold the whole file.
+    Enforces the size cap DURING the read itself, instead of trusting a
+    separate `stat()` call made beforehand (which can be stale -- e.g. a
+    file that grows between the stat and the read) to bound how many
+    bytes ever get pulled into memory."""
+    want = max_bytes + 1
+    chunks: list[bytes] = []
+    total = 0
+    while total < want:
+        chunk = os.read(fd, min(1024 * 1024, want - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    data = b"".join(chunks)
+    if len(data) > max_bytes:
+        raise _FileTooLarge()
+    return data
 
 
 def _state_key(task_id: str | None, abs_path: str) -> str:
@@ -253,10 +419,11 @@ def _load_state(state_path: Path) -> dict:
 
 
 def _save_state(state_path: Path, state: dict) -> None:
-    state_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(state_path.parent)
     tmp = state_path.with_suffix(state_path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2))
     os.replace(tmp, state_path)
+    secure_file(state_path)
 
 
 def _sha256(data: bytes) -> str:
@@ -407,7 +574,12 @@ def _rebuild_wikilink_edges(
             target_first = _first_chunk_id(mem, target_abs)
             if target_first is None:
                 continue
-            mem.graph.add_edge(
+            # Through `Memory._graph_add_edge` (locked), not `mem.graph.add_edge`
+            # directly: `ingest_path` no longer runs under `Memory._lock` for
+            # its whole duration (see `Memory.ingest`), so this write needs
+            # its own lock acquisition to stay consistent with concurrent
+            # Memory calls on other threads.
+            mem._graph_add_edge(
                 MemoryEdge(
                     source_id=source_first,
                     target_id=target_first,
@@ -436,8 +608,30 @@ def ingest_path(
     Unchanged files (by sha256) are skipped unless `force`. Changed files
     are re-ingested (`forget_source` then re-added). Files that vanished
     since the last run are forgotten too. One bad file never aborts the run.
+
+    Raises `FileNotFoundError` if `path` doesn't exist at all (callers map
+    this to a 400 / MCP ToolError) -- a silently-empty report for a typo'd
+    path is worse than a clear error.
+
+    Only regular files are read (FIFOs, device nodes, sockets are skipped,
+    reported under `skipped`): a FIFO's `read_bytes()` call blocks forever,
+    which used to freeze every other `Memory` call sharing the same daemon
+    since this used to run under `Memory._lock`. Symlinks whose resolved
+    target falls outside `root` are skipped too (reported under
+    `skipped`), so ingesting a vault can't be tricked into reading
+    (and later recalling/exporting) a file from outside it. So are
+    hardlinks (`st_nlink > 1`) and anything that fails validation again at
+    open time (TOCTOU) -- see the module docstring for why.
+
+    Text files (`.md`/`.markdown`/`.txt`/`.rst`/`.org`) are decoded as
+    strict UTF-8 (with an optional UTF-8 BOM); anything that fails to
+    decode, or contains a NUL byte, is skipped (reported under `skipped`)
+    rather than ingested as replacement-character soup. PDFs are read as
+    raw bytes regardless, since `pypdf` handles that format itself.
     """
     root = Path(path).resolve()
+    if not root.exists():
+        raise FileNotFoundError(f"path does not exist: {path}")
     root_dir = root if root.is_dir() else root.parent
     state_path = Path(state_path) if state_path else mem.home / "ingest_state.json"
     state = _load_state(state_path)
@@ -459,37 +653,122 @@ def ingest_path(
     stem_by_file: dict[str, str] = {}
     seen_abs: set[str] = set()
     changed_abs_paths: set[str] = set()
+    # Paths that *were* previously tracked under this exact on-disk name
+    # but are no longer safe to ingest this run (turned into a symlink
+    # pointing outside root, a hardlink, something non-regular, or caught
+    # swapping mid-validation) -- these must be treated as removed below
+    # even though a file of some kind still physically exists there.
+    unsafe_abs: set[str] = set()
 
     for file_path in _iter_files(root):
         report["files_seen"] += 1
-        abs_path = str(file_path.resolve())
-        seen_abs.add(abs_path)
-        suffix = file_path.suffix.lower()
 
         try:
-            size = file_path.stat().st_size
+            lst = os.lstat(file_path)
         except OSError as exc:
-            report["errors"].append({"path": abs_path, "error": str(exc)})
+            report["errors"].append({"path": str(file_path), "error": str(exc)})
             continue
 
-        if size > MAX_FILE_BYTES:
-            report["skipped"].append({"path": abs_path, "reason": "file too large (> 5MB)"})
+        is_symlink = stat.S_ISLNK(lst.st_mode)
+        target: Path | None = None
+        if is_symlink:
+            try:
+                target = file_path.resolve()
+            except OSError as exc:
+                report["errors"].append({"path": str(file_path), "error": str(exc)})
+                continue
+            if not _is_within(target, root):
+                report["skipped"].append({"path": str(file_path), "reason": "symlink outside root"})
+                unsafe_abs.add(str(file_path))
+                continue
+            # The symlink resolves inside root: safe to follow it now.
+            try:
+                lst = os.stat(file_path)
+            except OSError as exc:
+                report["errors"].append({"path": str(file_path), "error": str(exc)})
+                continue
+
+        # The identity to use for the rest of this iteration: the
+        # symlink's already-validated resolved target when this was a
+        # (safe) symlink, else the file's own on-disk path exactly as
+        # `os.walk` gave it to us. Deliberately NOT a fresh, independent
+        # `.resolve()` call on a name we've already validated -- that's
+        # itself a second, separate filesystem lookup that could observe
+        # a different state than the `lstat`/`stat` above did (the exact
+        # TOCTOU window this round's fix closes), and could raise
+        # `ValueError` out of `_is_within`'s `relative_to` entirely if a
+        # concurrent swap moved it outside `root` by the time we got here.
+        abs_path = str(target) if is_symlink else str(file_path)
+
+        if not stat.S_ISREG(lst.st_mode):
+            # FIFOs, device nodes, sockets, ... -- reading one of these
+            # (a FIFO especially) can block forever; never even try.
+            report["skipped"].append({"path": str(file_path), "reason": "not a regular file"})
+            unsafe_abs.add(abs_path)
             continue
+
+        if lst.st_nlink != 1:
+            # A hardlink inside root to a file outside it is S_ISREG and
+            # resolves inside root (there's no symlink to catch) -- but it
+            # shares an inode with something we can't vouch for. See the
+            # module docstring.
+            report["skipped"].append(
+                {"path": str(file_path), "reason": "hardlinked file (st_nlink>1)"}
+            )
+            unsafe_abs.add(abs_path)
+            continue
+
+        seen_abs.add(abs_path)
+        suffix = file_path.suffix.lower()
 
         if suffix not in TEXT_EXTS and suffix not in PDF_EXTS:
             report["skipped"].append({"path": abs_path, "reason": "unsupported file type"})
             continue
 
         try:
-            raw = file_path.read_bytes()
+            fd = _open_regular_strict(root_dir, Path(abs_path), lst)
+        except _ToctouRace as exc:
+            # Caught racing between the lstat validation above and this
+            # open -- unsafe regardless of what `seen_abs.add` just said;
+            # the orphan-detection pass below checks `unsafe_abs` before
+            # `seen_abs` for exactly this reason.
+            report["skipped"].append({"path": abs_path, "reason": str(exc)})
+            unsafe_abs.add(abs_path)
+            continue
         except OSError as exc:
             report["errors"].append({"path": abs_path, "error": str(exc)})
             continue
 
+        try:
+            raw = _read_capped_fd(fd, MAX_FILE_BYTES)
+        except _FileTooLarge:
+            report["skipped"].append({"path": abs_path, "reason": "file too large (> 5MB)"})
+            continue
+        except OSError as exc:
+            report["errors"].append({"path": abs_path, "error": str(exc)})
+            continue
+        finally:
+            os.close(fd)
+
+        text: str | None = None
+        if suffix in TEXT_EXTS:
+            if b"\x00" in raw:
+                report["skipped"].append(
+                    {"path": abs_path, "reason": "binary or non-UTF-8 content"}
+                )
+                continue
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                report["skipped"].append(
+                    {"path": abs_path, "reason": "binary or non-UTF-8 content"}
+                )
+                continue
+
         stem_by_file[abs_path] = file_path.stem.lower()
         if suffix in MARKDOWN_EXTS:
             try:
-                links_by_file[abs_path] = extract_wikilinks(raw.decode("utf-8", errors="replace"))
+                links_by_file[abs_path] = extract_wikilinks(text or "")
             except Exception:  # noqa: BLE001 - link extraction must never abort ingestion
                 links_by_file[abs_path] = set()
         else:
@@ -512,12 +791,11 @@ def ingest_path(
             if suffix in PDF_EXTS:
                 n_chunks = _ingest_pdf(mem, abs_path, rel, raw, task_id=task_id, category=category)
             else:
-                text = raw.decode("utf-8", errors="replace")
                 n_chunks = _ingest_markdown_or_text(
                     mem,
                     abs_path,
                     rel,
-                    text,
+                    text or "",
                     markdown=suffix in MARKDOWN_EXTS,
                     task_id=task_id,
                     category=category,
@@ -539,13 +817,25 @@ def ingest_path(
             "links": sorted(links_by_file.get(abs_path, set())),
         }
 
-    for key, info in list(files_state.items()):
+    # Orphan detection: match by path CONTAINMENT in the current scan's
+    # root, not by the state entry's stored `root` string -- a file first
+    # ingested under a wide root and later re-ingested (on change) under a
+    # narrower root has its stored `root` rewritten to the narrow one
+    # above, so a later rescan via the original wide root would otherwise
+    # never match it and would leak a stale entry forever once the file is
+    # deleted. A tracked path also counts as gone if it's inside this
+    # root but was reclassified as unsafe this run (hardlinked / symlinked
+    # outside / non-regular / caught racing) even though something still
+    # physically exists at that name.
+    for key in list(files_state.keys()):
         entry_task_id, abs_path = _decode_state_key(key)
-        if (
-            info.get("root") == str(root)
-            and abs_path not in seen_abs
-            and not os.path.exists(abs_path)
-        ):
+        if not _is_within(Path(abs_path), root):
+            continue
+        # `unsafe_abs` wins even over `seen_abs`: a path can be "seen" this
+        # run (its name was walked) and still be unsafe to keep around
+        # (e.g. caught racing in `_open_regular_strict` after already
+        # being added to `seen_abs`).
+        if abs_path in unsafe_abs or (abs_path not in seen_abs and not os.path.exists(abs_path)):
             mem.forget_source(abs_path, task_id=entry_task_id)
             del files_state[key]
             report["removed"].append(abs_path)
@@ -569,12 +859,22 @@ def watch_path(
 ) -> None:
     """Poll `path` every `interval` seconds, calling `on_report` when anything changed.
 
-    Exits cleanly when `stop_event` is set, or on KeyboardInterrupt.
+    Exits cleanly when `stop_event` is set, or on KeyboardInterrupt. If the
+    watched root disappears mid-run (an unmounted drive, a deleted vault,
+    ...), `ingest_path` raises `FileNotFoundError` -- that's reported to
+    `on_report` as an error entry and polling continues (the root may come
+    back) instead of letting the exception kill the watch loop/thread.
     """
     stop_event = stop_event or threading.Event()
     try:
         while not stop_event.is_set():
-            report = ingest_path(mem, path, task_id=task_id)
+            try:
+                report = ingest_path(mem, path, task_id=task_id)
+            except FileNotFoundError as exc:
+                if on_report:
+                    on_report({"root": str(path), "error": str(exc)})
+                stop_event.wait(interval)
+                continue
             changed = report["files_ingested"] > 0 or report["removed"]
             if changed and on_report:
                 on_report(report)

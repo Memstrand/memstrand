@@ -12,7 +12,19 @@ from datetime import UTC, datetime
 from enum import Enum
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _assume_utc(dt: datetime | None) -> datetime | None:
+    """A naive datetime (no tzinfo) is assumed UTC rather than rejected.
+    Without this, one naive `created_at` slipping in through `import_jsonl`
+    (hand-edited JSONL, an older export, a third-party tool) permanently
+    breaks every later `recall()`/`consolidate()` call that subtracts it
+    from an aware `datetime.now(UTC)` (`TypeError: can't subtract
+    offset-naive and offset-aware datetimes`)."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 class Category(str, Enum):
@@ -88,6 +100,14 @@ class MemoryAtom(BaseModel):
     source_ref: str | None = None    # locator within source, e.g. "notes/x.md#Heading [2]"
     last_accessed_at: datetime | None = None
 
+    @field_validator(
+        "created_at", "updated_at", "expires_at", "last_accessed_at", "fsrs_next_review",
+        mode="after",
+    )
+    @classmethod
+    def _naive_datetimes_assume_utc(cls, v: datetime | None) -> datetime | None:
+        return _assume_utc(v)
+
 
 class MemoryEdge(BaseModel):
     """One typed relationship between two atoms."""
@@ -99,6 +119,11 @@ class MemoryEdge(BaseModel):
     reason: str = ""                 # why this edge exists (esp. contradicts)
     weight: float = Field(default=1.0, ge=0.0)  # Hebbian: use strengthens
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("created_at", mode="after")
+    @classmethod
+    def _naive_created_at_assumes_utc(cls, v: datetime) -> datetime:
+        return _assume_utc(v)
 
 
 class ScopedQuery(BaseModel):

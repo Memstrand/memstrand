@@ -21,7 +21,8 @@ effective values for the current environment.
 | `MEMSTRAND_PORT` | `7777` | daemon bind port |
 | `MEMSTRAND_CONSOLIDATE_HOURS` | `24` | hours between scheduled `consolidate()` passes |
 | `MEMSTRAND_TASK` | *(unset)* | default task scope for `hook claude-code --task-from env` and the `/v1` proxy when no `x-memstrand-task` header is sent |
-| `MEMSTRAND_TOKEN` | *(unset)* | bearer token required on `/api`, `/mcp`, `/v1`; **mandatory** if `MEMSTRAND_HOST` is non-loopback |
+| `MEMSTRAND_TOKEN` | *(unset)* | bearer token required on `/api`, `/mcp`, `/v1`; **mandatory** if `MEMSTRAND_HOST` is non-loopback (this now works end-to-end for MCP too, not just REST — see [docs/cli.md](cli.md#security-notes)) |
+| `MEMSTRAND_ALLOWED_ORIGINS` | *(unset)* | comma-separated extra browser `Origin`s to trust in addition to the daemon's own host:port, e.g. `http://localhost:6274` for the MCP inspector, or the web UI's origin when binding to a non-loopback host for LAN access — on top of the loopback/token checks, not a replacement for them. Each entry must be exactly `scheme://host[:port]` (`http`/`https`, no path/query/fragment); `null`, `*`, and other malformed entries make the daemon refuse to start with an error naming the bad entry. There is no same-origin-by-Host fallback — an Origin/Referer matching the request's `Host` header is **not** automatically trusted (that was a DNS-rebinding hole); it must be the daemon's own origin or explicitly listed here. |
 
 Embedding dimension is auto-detected from a probe embed call and guarded
 against mismatches (e.g. switching embedding models on an existing store).
@@ -36,6 +37,12 @@ Everything lives under `MEMSTRAND_HOME` (default `~/.memstrand`):
   at a real server).
 - `kuzu/` — only used when `MEMSTRAND_GRAPH_BACKEND=kuzu`.
 - `backups/` — timestamped `memstrand backup` output.
+- `hook.log` — written by the Claude Code hooks when they can't reach/
+  authenticate with a running daemon (see [docs/cli.md](cli.md#security-notes)).
+
+Everything memstrand creates under `MEMSTRAND_HOME` is private by
+construction: directories are created `0700` and files `0600`, so the
+store, backups, and hook log aren't readable by other local users.
 
 See [docs/architecture.md](architecture.md) for how the stores interact, and
 [docs/integrations.md](integrations.md) for local-LLM-specific configuration

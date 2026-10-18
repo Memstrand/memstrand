@@ -7,6 +7,7 @@ mem.log_turn / mem.log_turns / mem.improve / mem.context.
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -184,6 +185,35 @@ def test_claude_code_hook_never_raises_and_logs_error(tmp_path):
 def test_claude_code_context_hook_empty_on_failure():
     result = hooks.claude_code_context_hook({"prompt": "q"}, BrokenMem(), task_from="none")
     assert result == ""
+
+
+# -- private file/dir permissions -----------------------------------------------------
+
+
+def test_hook_log_and_state_file_are_private(tmp_path):
+    """`hook.log` and `hook_state.json` (and their parent, MEMSTRAND_HOME)
+    must be created with restrictive permissions: 0700 for the directory,
+    0600 for the files. These can contain conversation content, so they
+    must not be world/group readable."""
+    transcript = tmp_path / "t.jsonl"
+    _write_jsonl(transcript, [_entry("user", "user", "hi")])
+    stdin_json = {"session_id": "s-priv", "transcript_path": str(transcript), "cwd": str(tmp_path)}
+
+    # state file, written on a normal successful run
+    hooks.claude_code_hook(stdin_json, FakeMem(), task_from="none")
+    state_path = hooks.get_settings().home / "hook_state.json"
+    assert state_path.exists()
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(state_path.parent.stat().st_mode) == 0o700
+
+    # log file, written when mem calls raise -- append a fresh turn so
+    # there's something new for BrokenMem.log_turn to choke on (the state
+    # file above already advanced past the existing entries).
+    _write_jsonl(transcript, [_entry("assistant", "assistant", "boom time")])
+    hooks.claude_code_hook(stdin_json, BrokenMem(), task_from="none")
+    log_path = hooks.get_settings().home / "hook.log"
+    assert log_path.exists()
+    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
 
 
 # -- task_id resolution ---------------------------------------------------------------

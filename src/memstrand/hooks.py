@@ -34,19 +34,27 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .config import get_settings
+from .config import ensure_private_dir, get_settings, secure_file
 
 # -- error logging --------------------------------------------------------------
 
 
 def log_error(message: str) -> None:
     """Best-effort error log for a hook that swallowed an exception. Never
-    raises itself — a broken logger must not break the hook it's logging for."""
+    raises itself — a broken logger must not break the hook it's logging for.
+
+    `hook.log` can contain exception text that embeds transcript content,
+    so it gets the same private 0700/0600 treatment as the rest of
+    MEMSTRAND_HOME: `ensure_private_dir` for its parent (only tightens
+    permissions on a dir memstrand itself creates), `secure_file` on the
+    file itself after every append (cheap -- a no-op chmod to the same
+    mode it was already in)."""
     try:
         path = get_settings().home / "hook.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(path.parent)
         with path.open("a") as f:
             f.write(f"{datetime.now(UTC).isoformat()} {message}\n")
+        secure_file(path)
     except Exception:  # noqa: BLE001, S110 - logging must never itself raise
         pass
 
@@ -70,10 +78,12 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     path = _state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_dir(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2))
+    secure_file(tmp)
     os.replace(tmp, path)
+    secure_file(path)
 
 
 # -- transcript parsing -----------------------------------------------------------
