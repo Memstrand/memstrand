@@ -54,6 +54,13 @@ def replay_priority(atom, now: datetime) -> float:
         (d for d in (atom.updated_at, atom.last_accessed_at) if d is not None),
         default=atom.created_at,
     )
+    # Defensive naive-datetime coercion: MemoryAtom's own validators already
+    # normalize these to aware UTC, but this stays defensive in case either
+    # ever arrives from an untyped source without going through the model.
+    if last_touched.tzinfo is None:
+        last_touched = last_touched.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     age_days = max((now - last_touched).total_seconds() / 86400.0, 0.0)
     recency = math.exp(-math.log(2) * age_days / _REPLAY_HALF_LIFE_DAYS)
     return (
@@ -157,23 +164,52 @@ def _replay(mem, now: datetime) -> int:
 
 
 def run(mem, now: datetime | None = None) -> dict:
-    """Full consolidation pass. Never raises — a failed distillation
-    stage is captured in the report instead of aborting expire/decay/
-    dedup/replay, which always run."""
+    """Full consolidation pass. Never raises — EACH stage (expire, decay,
+    dedup, replay, distill) is wrapped in its own try/except and recorded
+    as `{"error": ...}` in the report instead of aborting the rest: a
+    broken store call in one stage (or one bad atom within expire) must
+    never prevent the others from running, since this is a cron job with
+    no one watching it fail."""
     now = now or datetime.now(UTC)
     report: dict = {}
 
-    expired_ids = mem.graph.expired_ids(now)
-    for atom_id in expired_ids:
-        mem.vectors.delete(atom_id)
-        mem.keyword.delete(atom_id)
-        mem.graph.delete_atom(atom_id)
-        mem.sessions.log_provenance(atom_id, "expire", "ttl elapsed")
-    report["expired"] = len(expired_ids)
+    try:
+        expired_ids = mem.graph.expired_ids(now)
+    except Exception as e:  # noqa: BLE001 - never abort the rest of consolidation
+        report["expired"] = {"error": str(e)}
+    else:
+        expired_count = 0
+        expire_errors = []
+        for atom_id in expired_ids:
+            # Per-atom try: one atom whose vector/keyword/graph delete
+            # blows up must not stop the rest of the expired batch from
+            # being cleaned up.
+            try:
+                mem.vectors.delete(atom_id)
+                mem.keyword.delete(atom_id)
+                mem.graph.delete_atom(atom_id)
+                mem.sessions.log_provenance(atom_id, "expire", "ttl elapsed")
+                expired_count += 1
+            except Exception as e:  # noqa: BLE001 - one bad atom must not stop the others
+                expire_errors.append({"atom_id": atom_id, "error": str(e)})
+        report["expired"] = expired_count
+        if expire_errors:
+            report["expire_errors"] = expire_errors
 
-    report["edges_pruned"] = mem.graph.decay_edges()
-    report["duplicates_linked"] = _link_near_duplicates(mem)
-    report["replayed"] = _replay(mem, now)
+    try:
+        report["edges_pruned"] = mem.graph.decay_edges()
+    except Exception as e:  # noqa: BLE001
+        report["edges_pruned"] = {"error": str(e)}
+
+    try:
+        report["duplicates_linked"] = _link_near_duplicates(mem)
+    except Exception as e:  # noqa: BLE001
+        report["duplicates_linked"] = {"error": str(e)}
+
+    try:
+        report["replayed"] = _replay(mem, now)
+    except Exception as e:  # noqa: BLE001
+        report["replayed"] = {"error": str(e)}
 
     if _is_llm_reachable(mem):
         try:

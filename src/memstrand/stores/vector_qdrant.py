@@ -18,9 +18,11 @@ or `client=` to inject one directly (tests use `QdrantClient(":memory:")`).
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -34,9 +36,36 @@ from qdrant_client.models import (
     VectorParams,
 )
 
+from ..config import ensure_private_dir
 from ..schema import MemoryAtom, ScopedQuery
 
 COLLECTION = "memstrand"
+
+
+class EmbeddingDimensionMismatch(ValueError):
+    """The embedder's output dimension doesn't match this vector store's
+    configured dimension. Almost always means `MEMSTRAND_EMBED_MODEL` (or
+    the embedding backend) changed since the collection was created — a
+    collision an opaque Qdrant "vector dimension" / numpy shape error
+    wouldn't explain on its own, so every raise site here names the
+    expected vs. actual dims and the configured embed backend/model, plus
+    the fix."""
+
+
+def _dim_mismatch_message(
+    expected: int, actual: int, embed_backend: str | None, embed_model: str | None
+) -> str:
+    backend_bit = (
+        f" (configured embed backend={embed_backend!r}, embed_model={embed_model!r})"
+        if embed_backend or embed_model
+        else ""
+    )
+    return (
+        f"embedding dim mismatch: collection '{COLLECTION}' expects dim={expected}, "
+        f"but got dim={actual}{backend_bit} — embedding model changed. Fix: restore "
+        "the previous MEMSTRAND_EMBED_MODEL, or run `memstrand export` then import "
+        "into a fresh MEMSTRAND_HOME."
+    )
 
 
 def _point_id(atom_id: str) -> str:
@@ -54,14 +83,39 @@ class QdrantVectorStore:
         self,
         url: str | None = None,
         path: str | None = None,
-        dim: int = 384,
+        dim: int | None = None,
         client: QdrantClient | None = None,
+        embed_backend: str | None = None,
+        embed_model: str | None = None,
     ):
+        # Only used to enrich EmbeddingDimensionMismatch messages; this
+        # class never uses them to pick a backend itself.
+        self.embed_backend = embed_backend
+        self.embed_model = embed_model
+        # fix #1 (regression): the CLIENT is opened eagerly right here --
+        # for an embedded on-disk store (`path=`), this is what takes
+        # Qdrant's single-writer lock, and it needs no embedding at all.
+        # Collection creation/dim validation (`_ensure_collection` below)
+        # is deliberately deferred to the first call that actually knows a
+        # real embedding dimension (an `upsert`, or an explicit `dim=` an
+        # already-resolved caller passes in here) -- NOT bundled back into
+        # `__init__` -- so `Memory()`/`memstrand serve` can still start up
+        # with the embedding backend down, while the lock itself is taken
+        # immediately instead of on first use (see Memory.__init__, which
+        # wraps the raw "already accessed by another instance" RuntimeError
+        # this raises into the friendlier `StoreLocked`).
+        self._local_path: Path | None = None
         if client is not None:
             self.client = client
         elif url:
             self.client = QdrantClient(url=url)
         elif path:
+            # fix #6: the directory Qdrant is about to create its `.lock`
+            # file and (later) its collection tree in must already be
+            # private BEFORE it creates anything there, not chmod'd after
+            # the fact.
+            self._local_path = Path(path)
+            ensure_private_dir(self._local_path)
             self.client = QdrantClient(path=path)
         else:
             self.client = QdrantClient(":memory:")
@@ -73,22 +127,77 @@ class QdrantVectorStore:
         # effect in the local Qdrant` on every single startup.
         self._is_remote = bool(url)
         self.dim = dim
-        if not self.client.collection_exists(COLLECTION):
-            self.client.create_collection(
-                COLLECTION,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-            )
-            if self._is_remote:
-                self._ensure_payload_indexes()
-        else:
-            existing_dim = self.client.get_collection(COLLECTION).config.params.vectors.size
-            if existing_dim != dim:
-                raise ValueError(
-                    f"embedding dim mismatch: collection '{COLLECTION}' was created with "
-                    f"dim={existing_dim}, but the configured embedder produces dim={dim} "
-                    "— embedding model changed; run `memstrand export` then re-import "
-                    "into a fresh MEMSTRAND_HOME."
+        self._collection_ready = False
+        self._harden_local_storage()
+        if dim is not None:
+            self._ensure_collection(dim)
+
+    def _harden_local_storage(self) -> None:
+        """fix #6: tighten permissions on everything Qdrant has created
+        under `self._local_path` so far -- dirs 0700, files 0600. Called
+        right after the client opens (covers the `.lock` file) and again
+        after collection creation (covers `collection/<name>/storage.sqlite`
+        and friends). No-op for a remote (`url=`) or in-memory client, or
+        before anything exists on disk yet."""
+        if self._local_path is None or not self._local_path.exists():
+            return
+        for root, dirs, files in os.walk(self._local_path):
+            for d in dirs:
+                try:
+                    os.chmod(os.path.join(root, d), 0o700)
+                except OSError:
+                    pass
+            for f in files:
+                try:
+                    os.chmod(os.path.join(root, f), 0o600)
+                except OSError:
+                    pass
+        try:
+            self._local_path.chmod(0o700)
+        except OSError:
+            pass
+
+    def _collection_known(self) -> bool:
+        """True if the collection already exists -- either because this
+        instance created it (`_ensure_collection`), or because an earlier
+        instance/process already populated this same store -- WITHOUT
+        creating one. Lets the read-only methods (`exists`/`search`/
+        `delete`/`count`/`similar_to`) behave sanely (empty, never an
+        error) before anything has ever been embedded into a fresh store
+        (fix #1: `__init__` opens the client eagerly but no longer creates
+        the collection, so a brand new `Memory()` must not crash the first
+        `recall()`/`improve()` with `AttributeError`/`NoneType` the way
+        the old fully-lazy `self.vectors = None` regression did)."""
+        if self._collection_ready:
+            return True
+        if self.client.collection_exists(COLLECTION):
+            self.dim = self.client.get_collection(COLLECTION).config.params.vectors.size
+            self._collection_ready = True
+            return True
+        return False
+
+    def _ensure_collection(self, dim: int) -> None:
+        """Idempotent collection bootstrap: creates the collection (sized
+        to `dim`) the first time a real embedding dimension is known, or
+        validates `dim` against an already-created/pre-existing collection
+        on every later call. Deliberately NOT called from `__init__`
+        unless the caller already resolved a `dim=` itself -- see the
+        class docstring note in `__init__`."""
+        if self._collection_known():
+            if dim != self.dim:
+                raise EmbeddingDimensionMismatch(
+                    _dim_mismatch_message(self.dim, dim, self.embed_backend, self.embed_model)
                 )
+            return
+        self.client.create_collection(
+            COLLECTION,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+        )
+        if self._is_remote:
+            self._ensure_payload_indexes()
+        self.dim = dim
+        self._collection_ready = True
+        self._harden_local_storage()
 
     def _ensure_payload_indexes(self) -> None:
         """Server-side filtering is faster with indexes. Only called for a
@@ -131,7 +240,23 @@ class QdrantVectorStore:
         )
         return Filter(must=must)
 
+    def _check_dim(self, embedding: list[float]) -> None:
+        """Proactively catch a dim mismatch before handing it to Qdrant:
+        Qdrant's own "Vector dimension error" (or a numpy shape error, if
+        it ever got that far) names neither the expected/actual dims nor
+        the embed backend in a way a human can act on. Checking here means
+        we only ever raise the enriched `EmbeddingDimensionMismatch`."""
+        if len(embedding) != self.dim:
+            raise EmbeddingDimensionMismatch(
+                _dim_mismatch_message(self.dim, len(embedding), self.embed_backend, self.embed_model)
+            )
+
     def upsert(self, atom: MemoryAtom, embedding: list[float]) -> None:
+        # The ONE place the collection gets created: a real embedding is
+        # the first moment a dim is actually known (see `__init__`/
+        # `_ensure_collection`). Idempotent and cheap once the collection
+        # already exists.
+        self._ensure_collection(len(embedding))
         self.client.upsert(
             collection_name=COLLECTION,
             points=[
@@ -156,7 +281,11 @@ class QdrantVectorStore:
         )
 
     def exists(self, atom_id: str) -> bool:
-        """Content-hash dedup check: is this atom already stored?"""
+        """Content-hash dedup check: is this atom already stored? `False`
+        (never an error) if the collection doesn't exist yet -- a fresh
+        store that's never had anything upserted into it (fix #1)."""
+        if not self._collection_known():
+            return False
         records = self.client.retrieve(
             collection_name=COLLECTION, ids=[_point_id(atom_id)], with_vectors=False
         )
@@ -169,6 +298,11 @@ class QdrantVectorStore:
         now: datetime | None = None,
         limit: int | None = None,
     ) -> list[tuple[str, float]]:
+        """`[]` (never an error) if the collection doesn't exist yet --
+        nothing has ever been embedded into this store (fix #1)."""
+        if not self._collection_known():
+            return []
+        self._check_dim(embedding)
         now_ts = (now or datetime.now(UTC)).timestamp()
         hits = self.client.query_points(
             collection_name=COLLECTION,
@@ -180,7 +314,10 @@ class QdrantVectorStore:
 
     def similar_to(self, atom_id: str, query: ScopedQuery, limit: int = 5) -> list[tuple[str, float]]:
         """Points most similar to an already-stored point, scope-filtered.
-        Used by consolidation to find near-duplicates without re-embedding."""
+        Used by consolidation to find near-duplicates without re-embedding.
+        `[]` (never an error) if the collection doesn't exist yet."""
+        if not self._collection_known():
+            return []
         hits = self.client.query_points(
             collection_name=COLLECTION,
             query=_point_id(atom_id),
@@ -190,7 +327,17 @@ class QdrantVectorStore:
         return [(h.payload["atom_id"], h.score) for h in hits if h.payload["atom_id"] != atom_id][:limit]
 
     def delete(self, atom_id: str) -> None:
+        """No-op if the collection doesn't exist yet -- nothing to delete."""
+        if not self._collection_known():
+            return
         self.client.delete(collection_name=COLLECTION, points_selector=[_point_id(atom_id)])
+
+    def count(self) -> int:
+        """Point count in the collection. `0` (never an error) if the
+        collection doesn't exist yet."""
+        if not self._collection_known():
+            return 0
+        return self.client.count(collection_name=COLLECTION, exact=True).count
 
     def close(self) -> None:
         self.client.close()

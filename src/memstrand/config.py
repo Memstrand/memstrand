@@ -9,19 +9,68 @@ changing the environment.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
+class ConfigError(ValueError):
+    """An environment variable memstrand reads at `get_settings()` time
+    has a value outside its valid range (non-numeric, NaN/inf, negative,
+    out of bounds, ...). Names the offending variable and the expected
+    range/format instead of letting a bare `ValueError` (or, worse, a
+    silently-accepted nonsense value) through -- e.g.
+    `MEMSTRAND_CONSOLIDATE_HOURS=nan` used to be accepted at face value
+    and permanently disabled the consolidation scheduler with no error
+    anywhere."""
+
+
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
-    return float(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as e:
+        raise ConfigError(f"{name}={raw!r} is not a valid number (expected a float)") from e
+    if math.isnan(value) or math.isinf(value):
+        raise ConfigError(f"{name}={raw!r} must be a finite number (got {value})")
+    return value
 
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
-    return int(raw) if raw else default
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as e:
+        raise ConfigError(f"{name}={raw!r} is not a valid integer") from e
+    return value
+
+
+def _validate_port(name: str, value: int) -> int:
+    if not (1 <= value <= 65535):
+        raise ConfigError(f"{name}={value} is out of range (expected an integer in 1-65535)")
+    return value
+
+
+def _validate_positive_finite_float(name: str, value: float) -> float:
+    """Finite and > 0 -- the gate `_env_float` already rejects NaN/inf
+    and non-numeric input; this additionally rejects zero/negative values
+    that `_env_float` alone would happily accept (e.g.
+    `MEMSTRAND_CONSOLIDATE_HOURS=0` or `=-5` silently breaking the
+    scheduler in a different way than `=nan` does)."""
+    if not (value > 0) or math.isnan(value) or math.isinf(value):
+        raise ConfigError(f"{name}={value} must be a finite number greater than 0")
+    return value
+
+
+def _validate_unit_interval(name: str, value: float) -> float:
+    if math.isnan(value) or not (0.0 <= value <= 1.0):
+        raise ConfigError(f"{name}={value} is out of range (expected a float in 0.0-1.0)")
+    return value
 
 
 @dataclass
@@ -89,5 +138,65 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    """Fresh `Settings` read from the current environment."""
-    return Settings()
+    """Fresh `Settings` read from the current environment.
+
+    Raises `ConfigError` (a `ValueError`) if any environment-driven
+    numeric setting is out of its valid range: `MEMSTRAND_PORT` must be
+    an integer in 1-65535; `MEMSTRAND_CONSOLIDATE_HOURS` must be a finite
+    number > 0 (a NaN/inf/non-positive value used to be silently accepted
+    and permanently disabled the consolidation scheduler); `MEMSTRAND_MIN_RELEVANCE`
+    must be a finite number in 0.0-1.0. `_env_float`/`_env_int` already
+    reject non-numeric and NaN/inf values; this adds the range checks on
+    top, once per setting, in one place."""
+    settings = Settings()
+    _validate_port("MEMSTRAND_PORT", settings.server_port)
+    _validate_positive_finite_float("MEMSTRAND_CONSOLIDATE_HOURS", settings.consolidate_hours)
+    _validate_unit_interval("MEMSTRAND_MIN_RELEVANCE", settings.min_relevance)
+    return settings
+
+
+def ensure_private_dir(path: Path | str) -> Path:
+    """Create `path` (and any missing parents) with 0o700 permissions if
+    it doesn't exist yet. A directory that already exists — including a
+    user-supplied, non-empty MEMSTRAND_HOME — is returned untouched: this
+    only tightens permissions on directories memstrand itself creates, it
+    never re-chmods something that was already there.
+
+    Every module that creates a directory under MEMSTRAND_HOME (the home
+    dir itself, the sqlite/kuzu/qdrant subdirs, the ingest state file's
+    parent, export backups, ...) should go through this instead of a bare
+    `os.makedirs`/`Path.mkdir`, so file permissions are hardened in one
+    place. Thread-safety note: the umask toggle below is process-wide and
+    scoped as tightly as possible (restored in `finally`), but a
+    concurrent unrelated `mkdir` on another thread during that narrow
+    window could race it — acceptable for how rarely this runs (once per
+    store/home at construction time).
+    """
+    p = Path(path)
+    if p.exists():
+        return p
+    old_umask = os.umask(0o077)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    finally:
+        os.umask(old_umask)
+    try:
+        p.chmod(0o700)
+    except OSError:
+        pass
+    return p
+
+
+def secure_file(path: Path | str) -> Path:
+    """chmod an existing file to 0o600 (owner read/write only). No-op if
+    the file doesn't exist yet (the sqlite db's `-wal`/`-shm` siblings in
+    particular are created lazily by sqlite itself, after the point
+    callers can reasonably call this) — callers that need those covered
+    too should call this again after they're known to exist."""
+    p = Path(path)
+    if p.exists():
+        try:
+            p.chmod(0o600)
+        except OSError:
+            pass
+    return p

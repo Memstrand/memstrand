@@ -12,32 +12,63 @@ Memory for the mount).
 
 from __future__ import annotations
 
+import functools
+import os
 import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
-import httpx
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
-from .api import Memory
+from .client import RemoteError, open_local_memory, probe_daemon
 from .config import get_settings
+from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
 
-_CATEGORY_VALUES = [c.value for c in Category]
-_PROVENANCE_VALUES = [p.value for p in Provenance]
+if TYPE_CHECKING:
+    # `.api` pulls in qdrant_client -> fastembed -> onnxruntime; only
+    # imported for type annotations here. `_lazy_memory()`/`open_local_memory`
+    # (client.py) are what actually construct one, on first real use --
+    # merely importing this module (e.g. to check whether a daemon is
+    # already up in `main()`) must stay cheap.
+    from .api import Memory
 
 
-def _category(value: str) -> Category:
-    try:
-        return Category(value)
-    except ValueError:
-        raise ValueError(f"invalid category {value!r}; must be one of {_CATEGORY_VALUES}") from None
+def _guarded(fn):
+    """Turn a tool body's expected failures into `ToolError` (message kept
+    intact for the model) instead of letting mcp's `Tool.run()` collapse
+    them into the generic "Error executing tool <name>" with the reason
+    dropped — see `mcp.server.mcpserver.tools.base.Tool.run`: anything
+    that escapes a tool body which isn't already `ToolError`/`ResourceError`/
+    `MCPError` becomes an `UnexpectedToolError` whose own text never
+    reaches the client. Argument-validation failures (bad enum value,
+    wrong type, missing required field) never reach here at all — the SDK
+    catches those earlier, directly off the typed `Category`/`Provenance`
+    parameters, and reports them the same way.
 
+    Anything not listed below is a genuine crash and is left to propagate
+    (and be logged server-side) unwrapped."""
 
-def _provenance(value: str) -> Provenance:
-    try:
-        return Provenance(value)
-    except ValueError:
-        raise ValueError(f"invalid provenance {value!r}; must be one of {_PROVENANCE_VALUES}") from None
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except KeyError as exc:
+            # str(KeyError("no such atom: x")) is "'no such atom: x'" (repr
+            # of its one arg) -- unwrap it back to the plain message.
+            (message,) = exc.args or (str(exc),)
+            raise ToolError(str(message)) from exc
+        except (ValueError, FileNotFoundError, RemoteError) as exc:
+            raise ToolError(str(exc)) from exc
+        except LLMUnavailable as exc:
+            kind = "transient, retrying later may work" if exc.transient else "not transient"
+            raise ToolError(f"local LLM unavailable ({kind}): {exc}") from exc
+
+    return wrapper
 
 
 def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
@@ -55,25 +86,26 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
     mcp = MCPServer("memstrand")
 
     @mcp.tool()
+    @_guarded
     def remember(
         content: str,
-        category: str = "fact",
-        provenance: str = "explicit_statement",
+        category: Category = Category.fact,
+        provenance: Provenance = Provenance.explicit_statement,
         confidence: float = 0.8,
         task_id: str | None = None,
         host: str | None = None,
         ttl_days: float | None = None,
         session_id: str | None = None,
         source: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Store one atomic, durable memory. Call this as soon as the user
         states a fact, preference, decision, instruction, or commitment —
         not for chit-chat or throwaway context. One atomic fact per call;
         split compound statements into separate calls."""
         atom = get_mem().remember(
             content,
-            category=_category(category),
-            provenance=_provenance(provenance),
+            category=category,
+            provenance=provenance,
             confidence=confidence,
             session_id=session_id,
             task_id=task_id,
@@ -84,26 +116,26 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         return {"id": atom.id, "category": atom.category.value, "task_id": atom.task_id}
 
     @mcp.tool()
+    @_guarded
     def recall(
         query: str,
         task_id: str | None = None,
         host: str | None = None,
-        categories: list[str] | None = None,
+        categories: list[Category] | None = None,
         limit: int = 10,
         include_superseded: bool = False,
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """Scoped hybrid (semantic + keyword) recall. Call this at the
         start of a task and whenever you need context the user may have
         given you before — their preferences, past decisions, standing
         instructions, or anything relevant to the current question.
         Returns a trimmed list of the most relevant memories, newest
         contradictions included so you never act on stale info."""
-        cats = [_category(c) for c in categories] if categories else None
         hits = get_mem().recall(
             query,
             task_id=task_id,
             host=host,
-            categories=cats,
+            categories=categories,
             limit=limit,
             include_superseded=include_superseded,
         )
@@ -123,6 +155,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         ]
 
     @mcp.tool()
+    @_guarded
     def context(query: str | None = None, task_id: str | None = None) -> str:
         """Markdown memory block (standing instructions/preferences plus
         query-relevant memories), ready to drop straight into a system
@@ -130,6 +163,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         return get_mem().context(query, task_id=task_id)
 
     @mcp.tool()
+    @_guarded
     def answer(question: str, task_id: str | None = None) -> str:
         """Answer a question using ONLY stored memories — grounded, never
         hallucinated. Returns an "I don't know" message if nothing in
@@ -137,12 +171,13 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         return get_mem().grounded_answer(question, task_id=task_id)
 
     @mcp.tool()
+    @_guarded
     def update(
         atom_id: str,
         content: str | None = None,
-        category: str | None = None,
+        category: Category | None = None,
         confidence: float | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Correct an existing memory. If `content` actually changes, a
         new atom is created superseding the old one (the old atom stays
         queryable, never silently erased); if only category/confidence
@@ -150,7 +185,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         atom = get_mem().update(
             atom_id,
             content=content,
-            category=_category(category) if category is not None else None,
+            category=category,
             confidence=confidence,
         )
         return {
@@ -161,6 +196,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         }
 
     @mcp.tool()
+    @_guarded
     def forget(atom_id: str) -> str:
         """Delete a memory, with provenance logging. Use when the user
         explicitly asks you to forget or delete something they told you."""
@@ -168,30 +204,42 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         return f"forgot {atom_id}" if found else f"no such memory: {atom_id}"
 
     @mcp.tool()
-    def log_turn(session_id: str, role: str, content: str, task_id: str | None = None) -> str:
-        """Log one raw conversation turn (role: "user" or "assistant") for
-        later distillation into typed memory via `improve`. Call this for
-        every turn worth remembering, even before you know what parts of
-        it are durable — distillation figures that out later."""
+    @_guarded
+    def log_turn(
+        session_id: str,
+        role: Literal["user", "assistant", "system", "tool"],
+        content: str,
+        task_id: str | None = None,
+    ) -> str:
+        """Log one raw conversation turn for later distillation into typed
+        memory via `improve`. Call this for every turn worth remembering,
+        even before you know what parts of it are durable — distillation
+        figures that out later."""
         get_mem().log_turn(session_id, role, content, task_id=task_id)
         return "ok"
 
     @mcp.tool()
-    def improve(session_ids: list[str] | None = None) -> dict:
+    @_guarded
+    def improve(session_ids: list[str] | None = None) -> dict[str, Any]:
         """Distill logged session turns into typed permanent memory, in
         the background (returns immediately). Pass `session_ids=None` to
         distill every session that has new, undistilled turns."""
         return get_mem().improve(session_ids, background=True)
 
     @mcp.tool()
-    def ingest(path: str, task_id: str | None = None) -> dict:
+    @_guarded
+    def ingest(path: str, task_id: str | None = None) -> dict[str, Any]:
         """Ingest a file or directory (Markdown/Obsidian vault, plain
         text, or PDF) into memory. Safe to call repeatedly — only changed
         files are re-ingested."""
-        return get_mem().ingest(path, task_id=task_id)
+        resolved = Path(path).expanduser()
+        if not resolved.exists():
+            raise ToolError(f"path does not exist: {path}")
+        return get_mem().ingest(str(resolved), task_id=task_id)
 
     @mcp.tool()
-    def stats() -> dict:
+    @_guarded
+    def stats() -> dict[str, Any]:
         """Memory store stats: atom/edge/session counts and a breakdown
         by category and task — useful for sanity-checking what's stored."""
         return get_mem().stats()
@@ -217,31 +265,35 @@ _mem: Memory | None = None
 def _lazy_memory() -> Memory:
     global _mem
     if _mem is None:
-        _mem = Memory()
+        _mem = open_local_memory()
     return _mem
-
-
-def _daemon_running(server_url: str, timeout: float = 0.5) -> bool:
-    try:
-        resp = httpx.get(f"{server_url}/api/health", timeout=timeout)
-        return resp.status_code == 200
-    except httpx.HTTPError:
-        return False
 
 
 def main() -> None:
     """stdio entry point. Opens the stores directly, so it must not run
     alongside the daemon (embedded Qdrant/SQLite are single-process) —
-    if a daemon already answers on settings.server_url, tell the user to
-    point their MCP client at its HTTP endpoint instead and exit."""
+    if a daemon already answers on settings.server_url (whether or not it
+    accepts this client's token), tell the user to point their MCP client
+    at its HTTP endpoint instead and exit. A "rejected" probe (daemon up,
+    wrong/missing MEMSTRAND_TOKEN) is NOT "daemon down": opening the local
+    stores anyway would crash on Qdrant's on-disk lock, so it gets the
+    same refusal, plus a hint about the token."""
     settings = get_settings()
-    if _daemon_running(settings.server_url):
-        print(
+    token = os.environ.get("MEMSTRAND_TOKEN")
+    status = probe_daemon(settings.server_url, token=token)
+    if status in ("up", "rejected"):
+        message = (
             f"memstrand daemon is already running at {settings.server_url} "
             "and owns the stores. Configure your MCP client with the HTTP "
-            f"endpoint {settings.server_url}/mcp instead of stdio.",
-            file=sys.stderr,
+            f"endpoint {settings.server_url}/mcp instead of stdio."
         )
+        if status == "rejected":
+            message += (
+                " The daemon rejected this probe — if it requires a token, set "
+                "MEMSTRAND_TOKEN (sent as an `Authorization: Bearer <token>` header) "
+                "or configure your MCP client's HTTP connection with that header."
+            )
+        print(message, file=sys.stderr)
         sys.exit(1)
     build_mcp(_lazy_memory).run()
 

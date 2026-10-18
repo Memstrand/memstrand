@@ -4,16 +4,175 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.2] — unreleased
+
+### Fixed
+
+- **Hermetic test suite.** `tests/conftest.py` (previously nonexistent) now
+  has an autouse fixture that strips every `MEMSTRAND_*` and proxy
+  (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`, both cases) env var
+  and sandboxes `HOME`/`MEMSTRAND_HOME` at a tmp dir before each test.
+  Previously `MEMSTRAND_TOKEN=junk pytest` produced 22 failures from
+  ambient-environment leakage with no conftest at all to prevent it.
+- **`make install` on Python 3.14.** `kuzu==0.11.3` has no cp314 wheels and
+  its sdist doesn't build, so `make install` broke outright wherever a bare
+  `python3` resolved to 3.14. The Makefile now auto-detects the first
+  available `python3.13`/`python3.12`/`python3.11` on `PATH` (`PYTHON ?=
+  ...`), prints a clear error if none is found, and still allows `make
+  install PYTHON=python3.12` to force a specific interpreter.
+- **Dependency floors corrected**: `pydantic>=2.12` and `uvicorn>=0.31.1`
+  (both are `mcp>=2`'s own real floors; the previous `pydantic>=2.0`/
+  `uvicorn>=0.30` under-declared them), and `fastembed>=0.4` (0.3.x
+  predates `fastembed.rerank.cross_encoder`, which `Reranker` imports).
+- **CI matrix**: dropped the Python 3.13 "install without `kuzu`" special
+  case — kuzu 0.11.3 ships cp313 wheels for macOS (arm64 + x86_64) and
+  manylinux (`2_28`, aarch64 + x86_64), so `.[dev,all]` now installs
+  cleanly on every matrix cell. The `kuzu` extra now carries a
+  `python_version < "3.14"` marker in `pyproject.toml` so `pip install
+  memstrand[all]` on 3.14 simply omits kuzu instead of trying (and
+  failing) to build its sdist.
+- **README/PyPI**: relative image sources (`docs/assets/banner.svg`,
+  `docs/assets/demo.svg`) and relative links (`LICENSE`, `docs/*.md`) 404
+  on PyPI, which doesn't resolve repo-relative paths. All now point at
+  absolute `https://raw.githubusercontent.com/...` (images) or
+  `https://github.com/.../blob/master/...` (links) URLs, which also render
+  correctly on GitHub.
+- `client.daemon_running()` now sends `MEMSTRAND_TOKEN` on its health
+  check — previously an unauthenticated probe against a token-protected
+  daemon looked identical to "no daemon running", so the CLI/hooks would
+  mistakenly fall back to opening the stores directly.
+- `chat_completion()` now maps httpx-level transport errors (connection
+  refused, timeout, etc.) to a `LLMUnavailable` (transient) error instead
+  of letting the raw `httpx` exception propagate — previously a local LLM
+  server being down could crash a scheduled `consolidate()`/`improve()`
+  pass instead of being retried later.
+- `ingest()` now errors on a missing path (previously a silent no-op) and
+  skips symlinks that resolve outside the ingestion root and non-regular
+  files (FIFOs, device files, sockets) instead of following/reading them.
+- `import_jsonl()` now refuses to overwrite an existing atom id with
+  different content — re-importing the same export is idempotent, but a
+  conflicting atom id is an error rather than a silent clobber.
+- The `/v1` streaming proxy now forwards the upstream's error status
+  verbatim instead of masking non-2xx responses.
+- `recall(limit=0)` (or negative) now returns `[]` instead of erroring or
+  silently falling back to a default limit; `remember(ttl_days=0)` now
+  expires the atom immediately; `update(atom_id=...)` on a since-superseded
+  atom id now resolves to and applies the update on the current version.
+- `Memory` now constructs its vector store eagerly, at `Memory.__init__`
+  time, instead of lazily on first successful embed. Two consequences,
+  both fixed: a locked on-disk Qdrant store (`StoreLocked`) now fails fast
+  at daemon/CLI startup instead of surfacing confusingly on first use, and
+  `memstrand improve` as the very first store-touching operation on a
+  fresh daemon no longer crashes every candidate with `AttributeError:
+  'NoneType' object has no attribute 'exists'` (the dedup check in
+  `pipeline/distill.py` assumed the vector store already existed).
+- `server.serve()` now catches `StoreLocked`/`ConfigError` (and other
+  startup failures) around store construction and prints one clean
+  `error: ...` line to stderr and exits 1 — no ready banner, no traceback
+  — instead of letting a second `memstrand serve` against an
+  already-locked `MEMSTRAND_HOME` crash with a raw Qdrant lock string or
+  hang. `client.open_local_memory()` translates `StoreLocked` into the
+  same friendly "locked by another process" message the CLI already used
+  for the Qdrant-lock-string fallback path. The CLI also now prints a
+  clean one-line error (and exits 1) for `ConfigError`.
+- Fixed two integration tests that were marked `xfail` for the two product
+  bugs above (`test_wrong_port_with_live_daemon_gives_clean_lock_error`,
+  renamed `test_improve_as_the_very_first_operation_crashes` ->
+  `test_improve_as_first_operation_works`) — both now pass for real, and a
+  new integration test (`test_second_daemon_on_same_home_fails_fast_with_store_locked_error`)
+  covers the second-`serve`-on-the-same-home scenario directly.
+- Several integration/unit tests that spawned a real subprocess daemon or
+  MCP stdio server without explicitly pinning `MEMSTRAND_PORT` relied on
+  the implicit default port `7777` being free, which is flaky in CI/on a
+  developer machine with anything else listening there. All such tests
+  (`tests/test_mcp_wire.py`, `tests/integration/test_mcp_stdio.py`) now
+  request a fresh OS-assigned free port instead.
+- `hooks.py`'s `hook.log`/`hook_state.json` and `cli.py`'s `backup`
+  destination directory/file are now created through
+  `config.ensure_private_dir`/`config.secure_file` (`0700`/`0600`) like
+  every other on-disk store under `MEMSTRAND_HOME` — previously these two
+  surfaces were missed by the private-files-by-default change below.
+
+### Security
+
+- CLI commands, Claude Code hooks, and stdio `memstrand mcp` now detect a
+  running daemon that *rejects* the client's `MEMSTRAND_TOKEN` (missing or
+  wrong) and fail fast with a clear "set MEMSTRAND_TOKEN" message, instead
+  of silently falling back to opening the stores directly as a second,
+  unscoped writer. Hooks log this (and any other failure) to
+  `{MEMSTRAND_HOME}/hook.log`.
+- Non-loopback (`MEMSTRAND_HOST=0.0.0.0`) + `MEMSTRAND_TOKEN` now works
+  end-to-end for MCP, not just REST/the proxy — `/mcp` enforces the same
+  bearer-token check on a non-loopback bind.
+- Standing instructions (global, task-less promoted memories) now only
+  come from trusted provenance (`explicit_statement`, `validated`,
+  `corrected`); distillation only promotes **user**-turn content into
+  global standing instructions, never assistant turns.
+- Everything memstrand writes under `MEMSTRAND_HOME` is now created
+  private (directories `0700`, files `0600`).
+- The daemon now sends security headers (`X-Frame-Options: DENY`, a
+  restrictive `Content-Security-Policy`, etc.) on every response.
+- New `MEMSTRAND_ALLOWED_ORIGINS` env var (comma-separated) to trust
+  additional browser origins (e.g. the MCP inspector) for the existing
+  CSRF Origin check, on top of — not instead of — the loopback/token
+  checks.
+- **DNS-rebinding hole closed.** The CSRF/same-origin check used to also
+  accept an Origin (or Referer-derived origin) whose netloc merely
+  *matched the request's own Host header*, even if that origin wasn't in
+  `MEMSTRAND_ALLOWED_ORIGINS` — but an attacker who controls DNS (or a
+  malicious page the victim's browser resolves) controls both headers,
+  so that comparison proved nothing. This same-origin-by-Host fallback is
+  now removed entirely: in non-loopback mode, an Origin/Referer is only
+  trusted if it's the daemon's own origin or is explicitly listed in
+  `MEMSTRAND_ALLOWED_ORIGINS`. Requests with neither header (CLI, MCP
+  clients, hooks) are unaffected — the bearer token is still mandatory
+  for them. **To use the web UI over LAN** (binding to a non-loopback
+  host), add its origin to `MEMSTRAND_ALLOWED_ORIGINS`, e.g.
+  `MEMSTRAND_ALLOWED_ORIGINS=http://192.168.1.5:7777`.
+- `MEMSTRAND_ALLOWED_ORIGINS` entries are now strictly parsed and
+  validated at startup: each entry is normalized (whitespace/trailing `/`
+  stripped, scheme+host lowercased) and must be exactly
+  `scheme://host[:port]` with scheme `http` or `https` and no
+  path/query/fragment. `null`, `*`, bare hosts, and other malformed
+  entries are rejected — the daemon refuses to start with a clear error
+  naming the bad entry (fail closed) instead of silently ignoring it or
+  accepting something unsafe.
+- In non-loopback mode, when bound to a specific host/address (not
+  `0.0.0.0`/`::`), the `Host` header is now also validated: it must match
+  the bind host or the host of an allowed origin, or the request is
+  rejected with 403. Wildcard binds (`0.0.0.0`/`::`) have no single "own
+  Host" to check against, so this check is skipped for them (the
+  Origin/token checks still apply).
+- REST `/api/turns` and the MCP `log_turn` tool now validate `role`
+  against `user`/`assistant`/`system`/`tool` — REST rejects any other
+  value with 400, and `log_turn`'s `role` parameter is typed
+  `Literal["user", "assistant", "system", "tool"]` so the MCP SDK itself
+  rejects an invalid role before the tool body runs (and the value shows
+  up as an enum in the tool's schema). `hooks.py` and the OpenAI-proxy
+  turn logging already only ever send `user`/`assistant`.
 
 ### Changed
 
-- Docs reorganized: the long reference material (configuration, architecture,
-  Python API, CLI/REST/MCP reference, integrations) moved out of
-  `README.md` into `docs/*.md`. `examples/second_brain.md` now points to
-  [`docs/integrations.md`](docs/integrations.md), which carries the same
-  content. No commands, env vars, or behavior changed — this is a docs-only
-  reorganization.
+- MCP tool arguments `category`/`provenance` are now validated against the
+  `Category`/`Provenance` enums and rejected with an actionable error
+  (listing valid values) instead of propagating a raw exception; tool
+  errors generally are returned to MCP clients as actionable text.
+- The daemon now starts even if the configured embedding backend is
+  unreachable; the first operation that actually needs an embedding
+  reports a clear `embedding backend unreachable` error instead of
+  blocking startup or crashing later.
+- `export()` (jsonl) now includes `distill_state`, so a `backup`/`restore`
+  round-trip preserves per-session distillation progress instead of
+  re-distilling already-processed sessions after a restore.
+- CI lint now runs `ruff check .` (previously `ruff check src tests`, which
+  skipped `scripts/`). `ruff` is pinned to `>=0.17,<0.18` in the `dev`
+  extra so a new ruff minor can't silently fail CI on new default rules.
+  The `Makefile`'s `lint` target matches: `ruff check .`.
+- Added `src/memstrand/py.typed` (PEP 561 marker) so type checkers treat
+  memstrand's inline annotations as authoritative for downstream users;
+  confirmed included in the built wheel (`hatchling build --target
+  wheel` + `unzip -l`).
+- Version bumped to 0.2.2.
 
 ## [0.2.1]
 
@@ -27,6 +186,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `MCPServer` (`mcp.server.mcpserver`), and `streamable_http_path` moved
   from the constructor to `streamable_http_app()`. Tool/resource/prompt
   surface is unchanged.
+- Docs reorganized: the long reference material (configuration, architecture,
+  Python API, CLI/REST/MCP reference, integrations) moved out of
+  `README.md` into `docs/*.md`. `examples/second_brain.md` now points to
+  [`docs/integrations.md`](docs/integrations.md), which carries the same
+  content. No commands, env vars, or behavior changed — this is a docs-only
+  reorganization.
 
 ## [0.2.0] — "second brain"
 

@@ -18,7 +18,9 @@ import sqlite3
 import threading
 from datetime import UTC, datetime
 
+from ..config import ensure_private_dir, secure_file
 from ..schema import Category, MemoryAtom, MemoryEdge, Provenance, RelationType
+from .base import sort_hop_results
 
 # Column order used for every atoms INSERT/SELECT — keep in sync with MemoryAtom.
 ATOM_COLUMNS = (
@@ -77,6 +79,25 @@ def _atom_to_params(atom: MemoryAtom) -> tuple:
     )
 
 
+def _atom_filter_clause(
+    category: str | None, task_id: str | None, host: str | None
+) -> tuple[str, list]:
+    """Shared WHERE-clause builder for list_atoms/count_atoms so the two
+    can never drift out of sync on filter semantics (fix #10)."""
+    clauses: list[str] = []
+    params: list = []
+    for col, value in (("category", category), ("task_id", task_id), ("host", host)):
+        if value is None:
+            continue
+        if value == "":
+            clauses.append(f"({col} IS NULL OR {col} = '')")
+        else:
+            clauses.append(f"{col} = ?")
+            params.append(value)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params
+
+
 def _row_to_edge(row: tuple) -> MemoryEdge:
     (src, dst, rel, conf, reason, weight, created) = row
     return MemoryEdge(
@@ -97,8 +118,10 @@ class SqliteGraphStore:
     def __init__(self, path: str = "./memstrand.db"):
         parent = os.path.dirname(path)
         if parent:
-            os.makedirs(parent, exist_ok=True)
+            # deep-review fix #12: directories memstrand creates are 0o700.
+            ensure_private_dir(parent)
         self._lock = threading.RLock()
+        is_new = not os.path.exists(path)
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         # Wait up to 5s for a lock instead of raising "database is locked"
@@ -106,6 +129,13 @@ class SqliteGraphStore:
         # processes (graph + sessions + keyword index).
         self.conn.execute("PRAGMA busy_timeout=5000")
         self._init_schema()
+        if is_new:
+            # deep-review fix #12: a db file we created is 0o600 (shared
+            # with SqliteSessionStore/SqliteKeywordIndex on the same path;
+            # harmless to chmod again if another store got here first).
+            secure_file(path)
+            secure_file(f"{path}-wal")
+            secure_file(f"{path}-shm")
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -169,18 +199,8 @@ class SqliteGraphStore:
         offset: int = 0,
     ) -> list[MemoryAtom]:
         cols = ", ".join(ATOM_COLUMNS)
-        clauses: list[str] = []
-        params: list = []
-        for col, value in (("category", category), ("task_id", task_id), ("host", host)):
-            if value is None:
-                continue
-            if value == "":
-                clauses.append(f"({col} IS NULL OR {col} = '')")
-            else:
-                clauses.append(f"{col} = ?")
-                params.append(value)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.extend([limit, offset])
+        where, params = _atom_filter_clause(category, task_id, host)
+        params = [*params, limit, offset]
         with self._lock:
             rows = self.conn.execute(
                 f"SELECT {cols} FROM atoms {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -188,9 +208,15 @@ class SqliteGraphStore:
             ).fetchall()
         return [_row_to_atom(row) for row in rows]
 
-    def count_atoms(self) -> int:
+    def count_atoms(
+        self,
+        category: str | None = None,
+        task_id: str | None = None,
+        host: str | None = None,
+    ) -> int:
+        where, params = _atom_filter_clause(category, task_id, host)
         with self._lock:
-            row = self.conn.execute("SELECT COUNT(*) FROM atoms").fetchone()
+            row = self.conn.execute(f"SELECT COUNT(*) FROM atoms {where}", params).fetchone()
         return int(row[0])
 
     def ids_by_source(self, source: str) -> list[str]:
@@ -266,11 +292,20 @@ class SqliteGraphStore:
 
     def _one_hop(self, atom_id: str, relation: str | None) -> list[tuple[MemoryAtom, MemoryEdge]]:
         cols = ", ".join(EDGE_COLUMNS)
-        query = f"SELECT {cols} FROM edges WHERE (source_id=? OR target_id=?)"
+        query = (
+            f"SELECT {cols} FROM edges WHERE (source_id=? OR target_id=?)"
+        )
         params: list = [atom_id, atom_id]
         if relation:
             query += " AND relation=?"
             params.append(relation)
+        # Deterministic order (fix: cross-backend neighbors(depth>1) parity)
+        # -- see `sort_hop_results`'s docstring. SQLite gives no ordering
+        # guarantee without this, and a plain Python sort below is what
+        # actually makes the result identical to Kuzu's (this ORDER BY is
+        # belt-and-suspenders, cheap and harmless, but the real guarantee
+        # comes from `sort_hop_results`).
+        query += " ORDER BY weight DESC, relation ASC, source_id ASC, target_id ASC"
         with self._lock:
             rows = self.conn.execute(query, params).fetchall()
             out = []
@@ -280,14 +315,24 @@ class SqliteGraphStore:
                 other = self.get_atom(other_id)
                 if other is not None:
                     out.append((other, edge))
-        return out
+        return sort_hop_results(out)
 
     def neighbors(
         self, atom_id: str, relation: str | None = None, depth: int = 1
     ) -> list[tuple[MemoryAtom, MemoryEdge]]:
         """Both directions; the returned edge keeps its true source/target.
         depth>1 is a BFS over the depth-1 primitive — never revisits a
-        node and never returns the start atom."""
+        node and never returns the start atom.
+
+        Parallel edges (more than one edge connecting the same pair — a
+        second relation, or one edge in each direction) mean a node can be
+        reachable via more than one edge at the same depth; the dedup-by-id
+        `seen` set below keeps only the FIRST one encountered. `_one_hop`
+        always returns its rows pre-sorted via `sort_hop_results`
+        (highest weight, then relation name, then source/target id), so
+        that "first" edge is deterministic and identical across every
+        `GraphStore` backend, not an artifact of SQLite's/Kuzu's own
+        iteration order."""
         with self._lock:
             out = self._one_hop(atom_id, relation)
             if depth <= 1:

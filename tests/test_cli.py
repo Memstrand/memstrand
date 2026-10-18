@@ -259,12 +259,12 @@ def test_stats_json_and_human(capsys, patch_memory):
 
 
 def test_config_masks_secrets_and_shows_daemon_status(capsys, patch_memory, monkeypatch):
-    monkeypatch.setattr(cli, "daemon_running", lambda *a, **k: False)
+    monkeypatch.setattr(cli, "probe_daemon", lambda *a, **k: "down")
     rc = cli.main(["config"])
     assert rc == 0
     out = capsys.readouterr().out
-    daemon_line = next(line for line in out.splitlines() if line.startswith("daemon_running"))
-    assert daemon_line.split()[-1] == "False"
+    daemon_line = next(line for line in out.splitlines() if line.startswith("daemon "))
+    assert daemon_line.split()[-1] == "down"
     # the real llm_api_key default ("local") must never appear unmasked
     key_line = next(line for line in out.splitlines() if line.startswith("llm_api_key"))
     assert "local" not in key_line.split(None, 1)[1]
@@ -459,7 +459,7 @@ def test_daemon_running_true_and_false(monkeypatch):
 
 
 def test_get_memory_prefers_remote_and_passes_token(monkeypatch):
-    monkeypatch.setattr(client, "daemon_running", lambda *a, **k: True)
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=None, headers=None: httpx.Response(200))
     monkeypatch.setenv("MEMSTRAND_TOKEN", "tkn")
     rm = client.get_memory()
     assert isinstance(rm, client.RemoteMemory)
@@ -470,10 +470,29 @@ def test_get_memory_prefers_remote_and_passes_token(monkeypatch):
 def test_get_memory_falls_back_local_without_constructing_real_memory(monkeypatch):
     # Guards against accidentally loading fastembed/qdrant on this path:
     # Memory() is replaced with a sentinel instead of actually constructing one.
-    monkeypatch.setattr(client, "daemon_running", lambda *a, **k: False)
+    def _fail(url, timeout=None, headers=None):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "get", _fail)
     sentinel = object()
-    monkeypatch.setattr(client, "Memory", lambda **kwargs: sentinel)
+    # `open_local_memory()` imports `Memory` lazily from `.api` on every
+    # call (see client.py), so patching the real `memstrand.api.Memory`
+    # -- not a module-level `client.Memory` attribute, which no longer
+    # exists -- is what actually takes effect here.
+    monkeypatch.setattr("memstrand.api.Memory", lambda **kwargs: sentinel)
     assert client.get_memory() is sentinel
+
+
+def test_get_memory_raises_daemon_rejected_without_constructing_real_memory(monkeypatch):
+    # A "rejected" probe (daemon up, wrong/missing token) must never fall
+    # through to a local Memory() -- that would crash on Qdrant's lock.
+    monkeypatch.setattr(httpx, "get", lambda url, timeout=None, headers=None: httpx.Response(401))
+    monkeypatch.setattr(
+        "memstrand.api.Memory",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not construct Memory")),
+    )
+    with pytest.raises(client.DaemonRejected, match="rejected this client"):
+        client.get_memory()
 
 
 def test_normalize_atom_handles_dict_and_memory_atom(mem):

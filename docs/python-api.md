@@ -10,8 +10,11 @@ mem = Memory.in_memory()       # ephemeral: temp dir, in-memory Qdrant — for d
 mem.remember(content, category=Category.fact, provenance=Provenance.explicit_statement,
              confidence=0.8, session_id=None, task_id=None, host=None, ttl_days=None,
              source=None, source_ref=None, agent=None)              # -> MemoryAtom
+                                      # ttl_days=0 expires the atom immediately (not "no expiry")
 mem.log_turn(session_id, role, content, task_id=None)                # raw turn, cheap
 mem.update(atom_id, content=None, category=None, confidence=None)    # -> MemoryAtom (supersedes if content changed)
+                                      # atom_id may be a superseded atom's id — update() resolves it
+                                      # to the current (latest) version and applies there
 mem.forget(atom_id)                                                  # -> bool
 mem.forget_source(source, task_id=..., host=...)                     # -> int; default = every scope, exact-scope match if given
 
@@ -19,6 +22,7 @@ mem.forget_source(source, task_id=..., host=...)                     # -> int; d
 mem.recall(query, session_id=None, task_id=None, host=None, categories=None,
            limit=10, include_superseded=False, track=True,
            min_relevance=None)       # -> list[dict]; defaults to MEMSTRAND_MIN_RELEVANCE; neighbors are scope-filtered too
+                                      # limit <= 0 returns [] rather than erroring or falling back to a default
 mem.get(atom_id, task_id=None, host=None, scoped=False)              # -> dict | None; scoped=False (default) is the owner-facing browse view (all scopes)
 mem.list(category=None, task_id=None, host=None, limit=100, offset=0)  # -> list[dict]
 mem.count()                                                           # -> int
@@ -34,8 +38,15 @@ mem.consolidate(now=None)                                            # -> dict
 
 # export / import / ingest
 mem.export(fmt="jsonl")                                              # -> str ("jsonl" or "markdown")
+                                      # jsonl export now includes distill_state (per-session distillation
+                                      # progress), so a restore picks up distillation where it left off
 mem.import_jsonl(text)                                                # -> dict
+                                      # refuses to overwrite an existing atom id with different content —
+                                      # re-importing the same export is idempotent, importing a conflicting
+                                      # atom id is an error rather than a silent clobber
 mem.ingest(path, task_id=None, force=False)                           # -> dict
+                                      # a missing path is an error; symlinks resolving outside path's own
+                                      # root and non-regular files (FIFOs, devices, sockets) are skipped
 
 mem.close()  # or: with Memory() as mem: ...
 ```

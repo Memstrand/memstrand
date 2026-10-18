@@ -38,6 +38,14 @@ Both must pass before a PR is merged. CI runs the same two commands.
   `vector_store=QdrantVectorStore(client=QdrantClient(":memory:"))` and
   SQLite stores pointed at `tmp_path`, so nothing touches `~/.memstrand` or
   persists between runs.
+- **Hermetic by default.** `tests/conftest.py` has an autouse fixture that
+  strips every `MEMSTRAND_*` and proxy (`HTTP_PROXY`/`HTTPS_PROXY`/
+  `ALL_PROXY`/`NO_PROXY`, both cases) env var and points `HOME`/
+  `MEMSTRAND_HOME` at a fresh tmp dir before each test, so a developer's
+  (or CI runner's) ambient shell environment can never leak into a test. If
+  your test needs a specific value, just `monkeypatch.setenv(...)` /
+  `monkeypatch.delenv(...)` in the test body as usual — that runs after the
+  fixture's setup, so it wins for that one test.
 - Prefer adding a focused unit test near the existing tests for that area
   (`tests/test_core_v2.py` for core `Memory` behavior, `tests/test_cli.py`
   for CLI commands, `tests/test_server.py` for REST/MCP, etc.) over one

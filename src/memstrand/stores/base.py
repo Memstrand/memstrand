@@ -13,6 +13,33 @@ from typing import Protocol
 from ..schema import MemoryAtom, MemoryEdge, ScopedQuery
 
 
+def _hop_sort_key(pair: tuple[MemoryAtom, MemoryEdge]) -> tuple:
+    """Deterministic tie-break for one-hop traversal results shared by every
+    `GraphStore` backend (fix: `neighbors(depth>1)` parity). When the same
+    pair of atoms is connected by more than one edge (parallel edges — e.g.
+    two different relations, or one edge in each direction), SQL/Cypher give
+    no ordering guarantee on which row comes back first, and SQLite vs Kuzu
+    can (and did, see `/tmp/review_core/graph_parity_fuzz.py`) disagree. A
+    depth>1 BFS that dedupes visited nodes by id silently keeps whichever
+    edge happened to come first, so without a deterministic order that
+    "first" edge differs by backend and by run. Sorting every backend's raw
+    one-hop rows through this key before anything else sees them (highest
+    weight first, then relation name, then source/target id as a final
+    tiebreak) makes the "first" edge to any given neighbor always the same
+    one, independent of backend iteration order."""
+    _, edge = pair
+    return (-edge.weight, edge.relation.value, edge.source_id, edge.target_id)
+
+
+def sort_hop_results(
+    pairs: list[tuple[MemoryAtom, MemoryEdge]],
+) -> list[tuple[MemoryAtom, MemoryEdge]]:
+    """Apply `_hop_sort_key` — the single shared ordering every `GraphStore`
+    backend's `_one_hop`/`neighbors` must use so results are identical
+    across backends, not just internally consistent."""
+    return sorted(pairs, key=_hop_sort_key)
+
+
 class GraphStore(Protocol):
     """Typed relationship graph. SQLite is the default (Kuzu upstream was
     archived and embedded Kuzu only allows one writer process); Kuzu
@@ -30,7 +57,12 @@ class GraphStore(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> list[MemoryAtom]: ...  # newest created_at first. None = no filter; "" = only global (unset) values
-    def count_atoms(self) -> int: ...
+    def count_atoms(
+        self,
+        category: str | None = None,
+        task_id: str | None = None,
+        host: str | None = None,
+    ) -> int: ...  # same filter semantics as list_atoms, without the limit/offset/ordering
     def all_edges(self) -> list[MemoryEdge]: ...
     def neighbors(
         self, atom_id: str, relation: str | None = None, depth: int = 1
@@ -68,6 +100,7 @@ class VectorStore(Protocol):
     ) -> list[tuple[str, float]]: ...
     def exists(self, atom_id: str) -> bool: ...
     def delete(self, atom_id: str) -> None: ...
+    def count(self) -> int: ...  # 0 if nothing has ever been stored yet, never an error
     def close(self) -> None: ...
 
 
@@ -109,4 +142,5 @@ class SessionStore(Protocol):
     def last_distilled_turn_id(self, session_id: str) -> int: ...
     def mark_distilled(self, session_id: str, last_turn_id: int) -> None: ...
     def undistilled_sessions(self) -> list[str]: ...  # sessions with turns newer than last_turn_id
+    def dump_distill_state(self) -> list[dict]: ...  # [{"session_id","last_turn_id"}, ...], for export
     def close(self) -> None: ...

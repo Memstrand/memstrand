@@ -22,9 +22,8 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .api import Memory
-from .client import daemon_running, get_memory, normalize_atom
-from .config import get_settings
+from .client import get_memory, normalize_atom, probe_daemon
+from .config import ensure_private_dir, get_settings, secure_file
 from .schema import Category, Provenance
 
 # RemoteError subclasses RuntimeError; KeyError covers Memory.update()'s "no
@@ -95,10 +94,17 @@ def _cmd_mcp(args) -> int:
 
 def _cmd_ui(args) -> int:
     settings = get_settings()
-    if not daemon_running(settings.server_url):
+    status = probe_daemon(settings.server_url)
+    if status == "down":
         print(
             f"warning: no memstrand daemon detected at {settings.server_url} "
             "(run `memstrand serve` first)",
+            file=sys.stderr,
+        )
+    elif status == "rejected":
+        print(
+            f"warning: a memstrand daemon at {settings.server_url} rejected the health "
+            "probe (wrong/missing MEMSTRAND_TOKEN) — the UI may prompt you to authenticate",
             file=sys.stderr,
         )
     webbrowser.open(settings.server_url)
@@ -302,8 +308,14 @@ def _cmd_consolidate(args) -> int:
 def _cmd_ingest(args) -> int:
     settings = get_settings()
     if args.watch:
-        if daemon_running(settings.server_url):
+        status = probe_daemon(settings.server_url)
+        if status == "up":
             _watch_remote(settings.server_url, args)
+        elif status == "rejected":
+            raise _CliError(
+                f"a memstrand daemon is running at {settings.server_url} but rejected "
+                "this client — set MEMSTRAND_TOKEN to the daemon's token"
+            )
         else:
             _watch_local(args)
         return 0
@@ -333,6 +345,7 @@ def _watch_remote(url: str, args) -> None:
 
 def _watch_local(args) -> None:
     from . import ingest as ingest_module
+    from .api import Memory
 
     with Memory() as mem:
         print(f"watching {args.path} locally (every {args.interval}s, Ctrl-C to stop)")
@@ -372,7 +385,10 @@ def _cmd_backup(args) -> int:
     else:
         ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         out_path = settings.home / "backups" / f"memstrand-{ts}.jsonl"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Backups contain the full, unencrypted memory export -- the backups
+    # dir (if memstrand itself creates it) and each backup file are
+    # private, 0700/0600, exactly like the rest of MEMSTRAND_HOME.
+    ensure_private_dir(out_path.parent)
     with _memory_session() as mem:
         text = mem.export("jsonl")
     if str(out_path).endswith(".gz"):
@@ -380,6 +396,7 @@ def _cmd_backup(args) -> int:
             f.write(text)
     else:
         out_path.write_text(text)
+    secure_file(out_path)
     print(str(out_path))
     return 0
 
@@ -433,7 +450,7 @@ def _cmd_config(args) -> int:
     rows = [
         ("home", str(settings.home)),
         ("server_url", settings.server_url),
-        ("daemon_running", str(daemon_running(settings.server_url))),
+        ("daemon", probe_daemon(settings.server_url)),
         ("default_task", settings.default_task or "(none)"),
         ("graph_backend", settings.graph_backend),
         ("embed_backend", settings.embed_backend),
@@ -458,8 +475,22 @@ def _cmd_config(args) -> int:
 
 def _cmd_hook_claude_code(args) -> int:
     """Stop/SessionEnd/PreCompact body. Must exit 0 and print nothing no
-    matter what — even `get_memory()` failing must not surface here."""
+    matter what — even `get_memory()` failing must not surface here.
+
+    Probes the daemon before doing anything else: if it's up but rejects
+    this client (missing/wrong MEMSTRAND_TOKEN), opening a local `Memory`
+    instead would crash on Qdrant's on-disk lock, so this skips the turn
+    entirely (logged, not lost — the next successful run picks up
+    everything new since the last recorded transcript line)."""
     from . import hooks
+
+    settings = get_settings()
+    if probe_daemon(settings.server_url) == "rejected":
+        hooks.log_error(
+            "daemon requires MEMSTRAND_TOKEN which this hook does not have — "
+            "turns NOT logged; they will be picked up on the next run once fixed"
+        )
+        return 0
 
     mem = None
     try:
@@ -487,7 +518,7 @@ def _cmd_hook_claude_code_context(args) -> int:
     mem = None
     try:
         settings = get_settings()
-        if daemon_running(settings.server_url):
+        if probe_daemon(settings.server_url) == "up":
             stdin_json = _read_stdin_json()
             mem = get_memory()
             ctx = hooks.claude_code_context_hook(

@@ -19,6 +19,32 @@ if TYPE_CHECKING:
     from .config import Settings
 
 
+def _quiet_onnxruntime() -> None:
+    """Best-effort: silence onnxruntime's default logger before fastembed
+    loads a model, so local-mode daemons/CLI don't spew its hardware-probe
+    warning (e.g. "Skipping pci_bus_id for PCI path ..." on some Linux
+    VMs) to stderr. fastembed depends on onnxruntime, so by the time a
+    model is actually constructed it's importable; this is still wrapped
+    defensively since it's cosmetic, not load-bearing."""
+    try:
+        import onnxruntime
+
+        onnxruntime.set_default_logger_severity(3)  # 3 = ERROR, suppresses WARNING
+    except (ImportError, AttributeError):
+        pass
+
+
+class EmbeddingUnavailable(RuntimeError):
+    """The configured embedding backend didn't answer (connection refused,
+    timed out, or returned an error status). This is transient and holds
+    no permanent failed state anywhere: `Memory` never caches this as a
+    terminal failure, so a later call (once the backend is up) retries
+    from scratch and succeeds normally. Raised instead of letting the raw
+    httpx exception escape, so `memstrand serve` can start with the
+    embedding backend down and only the first real embed/recall/remember
+    call surfaces a clear, actionable error."""
+
+
 class FastEmbedder:
     """Lazy-loaded fastembed `TextEmbedding`. Importing/constructing this
     class never touches the network or loads an ONNX model — that only
@@ -31,6 +57,7 @@ class FastEmbedder:
 
     def _load(self):
         if self._model is None:
+            _quiet_onnxruntime()
             from fastembed import TextEmbedding
 
             kwargs = {"model_name": self._model_name} if self._model_name else {}
@@ -53,14 +80,28 @@ class OpenAIEmbedder:
         texts = list(texts)
         if not texts:
             return []
-        resp = httpx.post(
-            f"{self.base_url}/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": self.model, "input": texts},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        return [row["embedding"] for row in resp.json()["data"]]
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/embeddings",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"model": self.model, "input": texts},
+                timeout=120,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as e:
+            # Covers both transport failures (ConnectError, TimeoutException,
+            # ...) and HTTP error statuses (HTTPStatusError) -- either way the
+            # backend didn't give us an embedding, and there's nothing stored
+            # as a result of this call.
+            raise EmbeddingUnavailable(
+                f"embedding backend at {self.base_url} unreachable: {e}"
+            ) from e
+        try:
+            return [row["embedding"] for row in resp.json()["data"]]
+        except (KeyError, IndexError, ValueError) as e:
+            raise EmbeddingUnavailable(
+                f"embedding backend at {self.base_url} unreachable: malformed response: {e}"
+            ) from e
 
 
 def make_embedder(settings: Settings):
@@ -87,6 +128,7 @@ class Reranker:
 
     def _load(self):
         if self._model is None:
+            _quiet_onnxruntime()
             try:
                 from fastembed.rerank.cross_encoder import TextCrossEncoder
             except ImportError as e:
