@@ -38,6 +38,10 @@ Everything lives under `MEMSTRAND_HOME` (default `~/.memstrand`):
   at a real server).
 - `kuzu/` — only used when `MEMSTRAND_GRAPH_BACKEND=kuzu`.
 - `backups/` — timestamped `memstrand backup` output.
+- `scope_cache.json` — repo root → scope key cache for the hooks and
+  `--repo <path>` (invalidated when the repo's git config changes).
+- `backups/pre-scoping-v2-*.jsonl` — the automatic backup written before
+  the one-time scoping-v2 migration re-keys a pre-0.3 store.
 - `hook.log` — written by the Claude Code hooks when they can't reach/
   authenticate with a running daemon (see [docs/cli.md](cli.md#security-notes)).
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from memstrand import hooks
+from memstrand.scopes import agent_name
 
 # -- fakes ------------------------------------------------------------------------
 
@@ -162,6 +163,7 @@ def test_claude_code_hook_batches_when_log_turns_available(tmp_path):
         "role": "user",
         "content": "hello",
         "task_id": None,
+        "agent": agent_name("claude-code"),
     }
     assert mem.improve_calls == [(["claude-code:s4"], True)]
 
@@ -220,11 +222,23 @@ def test_hook_log_and_state_file_are_private(tmp_path):
 
 
 def test_resolve_task_id_variants(tmp_path, monkeypatch):
+    """Scoping v2: "cwd" resolves to the repo's normalized remote URL, else a
+    machine-qualified local path (never a bare, collision-prone folder name)."""
+    import socket
+    import subprocess
+
+    host = socket.gethostname()
     repo = tmp_path / "repo"
     (repo / "sub" / "dir").mkdir(parents=True)
-    (repo / ".git").mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
 
-    assert hooks._resolve_task_id("cwd", str(repo / "sub" / "dir")) == "repo"
+    # a repo with no remote: local key for the repo ROOT, from any subdir
+    assert hooks._resolve_task_id("cwd", str(repo / "sub" / "dir")) == f"local:{host}:{repo.resolve()}"
+
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", "git@github.com:Org/Repo.git"], check=True
+    )
+    assert hooks._resolve_task_id("cwd", str(repo / "sub")) == "github.com/org/repo"
     assert hooks._resolve_task_id("none", str(repo)) is None
 
     monkeypatch.setenv("MEMSTRAND_TASK", "env-task")
@@ -232,7 +246,7 @@ def test_resolve_task_id_variants(tmp_path, monkeypatch):
 
     no_git = tmp_path / "standalone"
     no_git.mkdir()
-    assert hooks._resolve_task_id("cwd", str(no_git)) == "standalone"
+    assert hooks._resolve_task_id("cwd", str(no_git)) == f"local:{host}:{no_git.resolve()}"
 
 
 # -- context hook --------------------------------------------------------------------

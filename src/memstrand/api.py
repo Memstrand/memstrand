@@ -9,26 +9,34 @@ every backing store on exit.
 from __future__ import annotations
 
 import hashlib
-import re
 import threading
-import unicodedata
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Self
 
 from . import export as export_module
 from . import ranking
-from .config import Settings, ensure_private_dir, get_settings, resolve_llm_api_key
+from .config import (
+    Settings,
+    ensure_private_dir,
+    get_settings,
+    resolve_llm_api_key,
+    secure_file,
+)
 from .embeddings import Reranker, make_embedder
 from .pipeline.consolidate import record_review
 from .pipeline.extract import LLMUnavailable, chat_completion
+from .sanitize import _sanitize_memory_text  # re-exported for existing callers
 from .schema import (
+    GLOBAL_SCOPE,
     Category,
     MemoryAtom,
     MemoryEdge,
     Provenance,
     RelationType,
     ScopedQuery,
+    normalize_scopes,
+    scopes_visible,
 )
 from .stores.base import GraphStore, KeywordIndex, SessionStore, VectorStore
 from .stores.graph_sqlite import SqliteGraphStore
@@ -70,155 +78,6 @@ class StoreLocked(RuntimeError):
 # a standing instruction gets in `context()`.
 _TRUSTED_STANDING_PROVENANCE = {Provenance.explicit_statement, Provenance.validated, Provenance.corrected}
 
-_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s*")
-_ROLE_PREFIX_RE = re.compile(r"^(system|assistant|user|tool)\s*:", re.IGNORECASE)
-
-# Variation selectors (VS1-16 and the IVS/mongolian supplement block):
-# invisible codepoints that only ever modify how the PRECEDING character
-# renders (e.g. U+FE0F forces emoji-style presentation) -- they carry no
-# text of their own. A role word with one spliced in the middle
-# ("system︎:") still READS as "system:" to a human but no longer
-# matches `_ROLE_PREFIX_RE` literally. Safe to drop unconditionally from
-# the real display text (not just a detection copy): removing one never
-# changes what text is visibly present, only a rendering hint on the
-# character right before it (e.g. "❤️" keeps its heart character,
-# "coffee" keeps every letter).
-_VARIATION_SELECTOR_RE = re.compile("[︀-️\U000e0100-\U000e01ef]")
-
-# Cyrillic/Greek characters that are visually indistinguishable (in most
-# fonts) from a Latin letter used in "system"/"assistant"/"user"/"tool" --
-# a known homoglyph trick (the same one IDN/domain spoofing uses) that
-# would otherwise defeat `_ROLE_PREFIX_RE` entirely, e.g. "ѕystem:" (with
-# a Cyrillic "ѕ", U+0455) reads as "system:" to a human but doesn't match
-# an ASCII-only regex. Used ONLY to build a translated copy of the text for
-# the role-prefix *check* below -- the memory's actual displayed content is
-# never rewritten by this map, only a throwaway detection copy (see
-# `_detection_skeleton`) used to decide WHETHER a prefix is present.
-_CONFUSABLES_TO_LATIN = {
-    # Cyrillic
-    "а": "a", "А": "A",
-    "е": "e", "Е": "E",
-    "і": "i", "І": "I",
-    "о": "o", "О": "O",
-    "р": "p", "Р": "P",
-    "с": "c", "С": "C",
-    "ѕ": "s", "Ѕ": "S",
-    "т": "t", "Т": "T",
-    "у": "y", "У": "Y",
-    "х": "x", "Х": "X",
-    "ј": "j", "Ј": "J",
-    # Greek
-    "α": "a", "Α": "A",
-    "ε": "e", "Ε": "E",
-    "ι": "i", "Ι": "I",
-    "κ": "k", "Κ": "K",
-    "ο": "o", "Ο": "O",
-    "ρ": "p", "Ρ": "P",
-    "τ": "t", "Τ": "T",
-    "υ": "u", "Υ": "Y",
-    "χ": "x", "Χ": "X",
-}
-
-
-def _to_latin_confusables(text: str) -> str:
-    return "".join(_CONFUSABLES_TO_LATIN.get(ch, ch) for ch in text)
-
-
-def _detection_skeleton(text: str) -> str:
-    """Build a THROWAWAY copy of `text` used ONLY to DETECT a disguised
-    leading role prefix or markdown heading -- never returned, stored, or
-    displayed anywhere.
-
-    NFKD-decomposes first, which splits a precomposed accented letter back
-    into its base letter plus a combining mark -- e.g. "ś" (U+015B, a
-    single codepoint) becomes "s" + U+0301 (combining acute). Dropping
-    Unicode category "Mn" (combining marks, plus "Cf"/format chars again,
-    harmless belt-and-suspenders) and variation selectors afterward then
-    lets "śystem:" read as "system:" for detection, the same way the
-    confusables map below lets a homoglyph ("ѕystem:", Cyrillic "ѕ") read
-    as "system:". Casefolds last so detection is case-insensitive.
-
-    Deliberately asymmetric from the real sanitized output: legitimate
-    accented content ("café", "naïve") must never have its accents
-    stripped in what's actually stored/displayed -- only this disposable
-    skeleton drops them, purely to decide WHETHER a prefix is present.
-    What actually gets REMOVED is always sliced out of the real,
-    accent-preserving text (see `_strip_leading_structure`), never out of
-    this skeleton."""
-    decomposed = unicodedata.normalize("NFKD", text)
-    stripped = "".join(
-        ch
-        for ch in decomposed
-        if unicodedata.category(ch) not in ("Mn", "Cf") and not _VARIATION_SELECTOR_RE.match(ch)
-    )
-    return _to_latin_confusables(stripped).casefold()
-
-
-def _strip_leading_structure(text: str) -> str:
-    """One pass of stripping a leading markdown heading or disguised role
-    prefix from `text` -- always the real, accent/content-preserving
-    display string, never the `_detection_skeleton` used to decide
-    whether one is present.
-
-    Detection goes through the skeleton (so a combining-mark-disguised
-    role word like "śystem:" or a homoglyph one like "ѕystem:" is still
-    recognized), but the actual removal is computed directly against the
-    real text: the leading '#'-run for a heading, or "everything up to
-    and including the first ':'" for a role prefix -- never a slice
-    length borrowed from the differently-sized (NFKD-expanded) skeleton,
-    which would misalign against the real string's indices."""
-    skeleton = _detection_skeleton(text)
-    if _MARKDOWN_HEADING_RE.match(skeleton):
-        return _MARKDOWN_HEADING_RE.sub("", text, count=1).strip()
-    if _ROLE_PREFIX_RE.match(skeleton):
-        colon_idx = text.find(":")
-        if colon_idx != -1:
-            return text[colon_idx + 1 :].strip()
-    return text
-
-
-def _sanitize_memory_text(text: str) -> str:
-    """Neutralize markdown structure a memory's own CONTENT might use to
-    impersonate part of the `context()` block's structure (a heading, a
-    fake "system:"/"assistant:" turn, ...) — relevant because atom content
-    can come from an untrusted import, not just from a trusted `remember()`
-    call.
-
-    Before any of that: NFKC-normalize (collapses fullwidth/compatibility
-    forms like the fullwidth '＃' down to plain '#', so they can't dodge
-    `_MARKDOWN_HEADING_RE`) and drop every Unicode category "Cf" (format)
-    character plus U+FEFF (BOM / zero-width no-break space; Cf already
-    covers it, but it's called out explicitly since this is a security
-    boundary) and every variation selector (invisible rendering hints,
-    e.g. "system︎:" with a stray VS15 — removing one never deletes any
-    visible text, only a presentation hint on the character before it) --
-    zero-width/invisible characters such as U+200B (ZWSP) would otherwise
-    sit silently inside a heading/role marker and defeat the regexes below
-    without being visible anywhere.
-
-    Then collapses embedded newlines to spaces (so a multi-line "fake
-    block" can't masquerade as several separate headings/list items once
-    rendered), and strips any leading markdown heading marker or
-    role-like prefix -- including homoglyph (e.g. Cyrillic "ѕystem:") and
-    combining-mark-disguised (e.g. "śystem:") role words, detected via
-    `_detection_skeleton`/`_strip_leading_structure` without ever
-    stripping accents from legitimate content like "café"/"naïve" in the
-    actual output -- repeating a few times in case of nesting (e.g.
-    "### assistant: ...", "### ### system: system: ...")."""
-    normalized = unicodedata.normalize("NFKC", text)
-    normalized = "".join(
-        ch
-        for ch in normalized
-        if ch != "﻿" and unicodedata.category(ch) != "Cf" and not _VARIATION_SELECTOR_RE.match(ch)
-    )
-    collapsed = re.sub(r"\s+", " ", normalized).strip()
-    for _ in range(5):
-        stripped = _strip_leading_structure(collapsed)
-        if stripped == collapsed:
-            break
-        collapsed = stripped
-    return collapsed
-
 _RECALL_RECENCY_HALF_LIFE_DAYS = 90.0
 
 # Sentinel default for `Memory.forget_source(task_id=..., host=...)`: distinct
@@ -226,6 +85,23 @@ _RECALL_RECENCY_HALF_LIFE_DAYS = 90.0
 # default used by the CLI/REST "wipe this source everywhere" action can be
 # told apart from an explicit "only the global scope" request.
 _ALL_SCOPES = object()
+
+
+def _atom_scopes(task_id: str | None, scopes: list[str] | None) -> list[str]:
+    """Scope set for a WRITE: explicit `scopes` win; else the legacy single
+    `task_id` (None = global)."""
+    return normalize_scopes(scopes if scopes is not None else [task_id])
+
+
+def _fmt_scopes(scopes: list[str]) -> str:
+    return ", ".join(s or "global" for s in scopes)
+
+
+def _query_scopes(task_id: str | None, scopes: list[str] | None) -> list[str]:
+    """Active scopes for a READ: `scopes` plus the legacy `task_id`; global
+    is always visible on top, so it's never listed."""
+    out = [*(scopes or []), *([task_id] if task_id else [])]
+    return [s for s in normalize_scopes(out) if s != GLOBAL_SCOPE]
 
 
 class Memory:
@@ -334,6 +210,104 @@ class Memory:
         if self.reranker is None and self.settings.rerank_model:
             self.reranker = Reranker(self.settings.rerank_model)
 
+        self._migrate_scoping_v2()
+
+    # -- one-time migrations ------------------------------------------------------
+
+    _SCOPING_META_KEY = "scoping_version"
+
+    def _migrate_scoping_v2(self) -> dict:
+        """Re-key pre-v2 atoms to content-only ids (docs/design/scoping-v2.md
+        §7). Runs once per store, guarded by a session-store meta marker.
+
+        Pre-v2 ids hashed (content, task, host); v2 hashes (content, host).
+        Global atoms hashed an empty task, so their ids are unchanged --
+        only task-scoped atoms move. Atoms that collapse onto the same new
+        id (identical content in several tasks) MERGE: scope sets unioned,
+        highest confidence kept, earliest created_at, access/FSRS stats from
+        the most recently touched one. Edges are re-pointed, provenance
+        history is copied forward (the ledger stays append-only), and the
+        stored embedding is reused (no re-embedding). A full JSONL backup is
+        written first whenever anything needs to move.
+
+        Legacy single-`task_id` values on atoms that DON'T move need no
+        rewrite: every store decodes/filters them as one-element sets."""
+        get_meta = getattr(self.sessions, "get_meta", None)
+        set_meta = getattr(self.sessions, "set_meta", None)
+        if get_meta is None or set_meta is None or get_meta(self._SCOPING_META_KEY) == "2":
+            return {"migrated": 0}
+        migrated = self._rekey_atoms(backup_label="pre-scoping-v2")
+        set_meta(self._SCOPING_META_KEY, "2")
+        return {"migrated": migrated}
+
+    def _rekey_atoms(self, backup_label: str | None = None) -> int:
+        """Move every atom whose id isn't its content-only id, merging atoms
+        that collapse onto the same id. Idempotent. Also used after importing
+        a pre-0.3 export. Returns the number of atoms moved."""
+        with self._lock:
+            groups: dict[str, list[MemoryAtom]] = {}
+            for atom in self._iter_all_atoms():
+                groups.setdefault(self._atom_id(atom.content, atom.host, atom.source), []).append(atom)
+            to_move = {
+                new_id: atoms
+                for new_id, atoms in groups.items()
+                if len(atoms) > 1 or atoms[0].id != new_id
+            }
+            if not to_move:
+                return 0
+            if backup_label:
+                self._write_backup(backup_label)
+            # Build the complete old->new id map BEFORE touching edges: an
+            # edge can join two atoms that both move (in different groups),
+            # and re-pointing it group-by-group would leave one endpoint on a
+            # deleted id.
+            id_map = {a.id: new_id for new_id, atoms in to_move.items() for a in atoms}
+            for new_id, atoms in to_move.items():
+                self._write_merged_atom(new_id, atoms)
+            for edge in self.graph.all_edges():
+                if edge.source_id not in id_map and edge.target_id not in id_map:
+                    continue
+                src = id_map.get(edge.source_id, edge.source_id)
+                dst = id_map.get(edge.target_id, edge.target_id)
+                if src != dst:
+                    self.graph.add_edge(edge.model_copy(update={"source_id": src, "target_id": dst}))
+            for old_id, new_id in id_map.items():
+                if old_id == new_id:
+                    continue
+                self.sessions.copy_history(old_id, new_id)
+                self.sessions.log_provenance(new_id, "migrate", f"scoping v2: re-keyed from {old_id}")
+                self._delete_atom(old_id)
+            return sum(len(atoms) for atoms in to_move.values())
+
+    def _write_merged_atom(self, new_id: str, atoms: list[MemoryAtom]) -> MemoryAtom:
+        def touched(a: MemoryAtom) -> datetime:
+            return max(d for d in (a.created_at, a.updated_at, a.last_accessed_at) if d is not None)
+
+        base = max(atoms, key=touched)
+        merged = base.model_copy(
+            update={
+                "id": new_id,
+                "scopes": normalize_scopes([s for a in atoms for s in a.scopes]),
+                "confidence": max(a.confidence for a in atoms),
+                "created_at": min(a.created_at for a in atoms),
+            }
+        )
+        vector = next(
+            (v for v in (self.vectors.get_vector(a.id) for a in atoms) if v is not None), None
+        )
+        self.vectors.upsert(merged, vector if vector is not None else self._embed(merged.content))
+        self.graph.add_atom(merged)
+        self.keyword.add(merged)
+        return merged
+
+    def _write_backup(self, label: str) -> Path:
+        ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        out_path = self.home / "backups" / f"{label}-{ts}.jsonl"
+        ensure_private_dir(out_path.parent)
+        out_path.write_text(self.export("jsonl"))
+        secure_file(out_path)
+        return out_path
+
     @property
     def llm_api_key(self) -> str:
         """Resolved per use, so `MEMSTRAND_LLM_API_KEY_COMMAND` tokens stay fresh."""
@@ -380,24 +354,34 @@ class Memory:
             self.graph.add_edge(edge)
 
     @staticmethod
-    def _atom_id(content: str, task_id: str | None = None, host: str | None = None) -> str:
-        """Scope-aware content hash: the same text in two different
-        task/host scopes gets two different ids, so one doesn't shadow
-        the other. Re-remembering the same (content, scope) is a no-op id."""
-        key = f"{content}\x1f{task_id or ''}\x1f{host or ''}"
+    def _atom_id(content: str, host: str | None = None, source: str | None = None) -> str:
+        """Content hash, NOT scope-aware (scoping v2): the same text learned
+        in a second scope widens the existing atom's scope set instead of
+        creating a sibling. `host` stays in the key — it's a separate scope
+        dimension with its own exact-match semantics — and so does `source`:
+        an atom has ONE source, so identical text ingested from two
+        different files stays two atoms (otherwise the later file would
+        overwrite the earlier one's provenance, leaking its path into the
+        other scope and breaking `forget_source` for the first file).
+        Sourceless atoms keep the pre-v2 global key exactly. Pre-v2 ids also
+        hashed the task; `_migrate_scoping_v2` re-keys those."""
+        key = f"{content}\x1f\x1f{host or ''}"
+        if source:
+            key += f"\x1f{source}"
         return f"mem:{hashlib.sha256(key.encode()).hexdigest()[:16]}"
 
     @staticmethod
-    def _visible(atom: MemoryAtom, task_id: str | None, host: str | None, now: datetime) -> bool:
+    def _visible(atom: MemoryAtom, scopes: list[str], host: str | None, now: datetime) -> bool:
         """THE single scope-visibility rule, used everywhere a graph-hydrated
         atom (neighbor, contradiction, standing instruction, ...) needs to be
-        checked against a query scope: visible if its task_id/host is that
-        exact scope OR global (None), and it isn't expired. Mirrors the hard
-        filter `VectorStore.search`/`KeywordIndex.search` already apply to
-        primary recall hits — this is what makes it apply to everything
-        *reached through* a hit (graph neighbors) too, closing the
+        checked against a query scope: visible if it's global or shares a
+        scope with `scopes` (`schema.scopes_visible`), its host is that host
+        or global (None), and it isn't expired. Mirrors the hard filter
+        `VectorStore.search`/`KeywordIndex.search` already apply to primary
+        recall hits — this is what makes it apply to everything *reached
+        through* a hit (graph neighbors) too, closing the
         global-atom-as-bridge leak between scopes."""
-        if atom.task_id is not None and atom.task_id != task_id:
+        if not scopes_visible(atom.scopes, scopes):
             return False
         if atom.host is not None and atom.host != host:
             return False
@@ -430,11 +414,44 @@ class Memory:
         source: str | None = None,
         source_ref: str | None = None,
         agent: str | None = None,
+        scopes: list[str] | None = None,
     ) -> MemoryAtom:
+        """Store one memory. Scope is `scopes` (a list of scope keys;
+        `[""]`/`None` entries mean global) or the legacy single `task_id`.
+        Re-remembering identical content (same host and source) merges into
+        the existing atom: its scope set becomes the UNION of old and new,
+        so a fact learned in a second repo becomes visible in both.
+
+        A merge that WIDENS the atom into new scopes only adds those scopes:
+        the existing provenance/category/session/agent/expiry are kept and
+        confidence is the max, so a weaker write from one repo can never
+        downgrade what another repo already established (e.g. strip a
+        standing instruction's trusted provenance). Re-remembering within
+        scopes the atom already has is an in-place update, as before."""
         with self._lock:
-            atom_id = self._atom_id(content, task_id, host)
+            atom_id = self._atom_id(content, host, source)
             existing = self.graph.get_atom(atom_id)
             now = datetime.now(UTC)
+            requested = _atom_scopes(task_id, scopes)
+            new_scopes = requested
+            if existing is not None:
+                new_scopes = normalize_scopes([*existing.scopes, *requested])
+                if not set(requested) <= set(existing.scopes):
+                    widened = existing.model_copy(
+                        update={
+                            "scopes": new_scopes,
+                            "confidence": max(existing.confidence, confidence),
+                            "updated_at": now,
+                        }
+                    )
+                    vector = self.vectors.get_vector(atom_id)
+                    self.vectors.upsert(widened, vector if vector is not None else self._embed(content))
+                    self.graph.add_atom(widened)
+                    self.keyword.add(widened)
+                    self.sessions.log_provenance(
+                        atom_id, "scope", f"widened to {_fmt_scopes(new_scopes)} by remember ({provenance.value})"
+                    )
+                    return widened
             atom = MemoryAtom(
                 id=atom_id,
                 category=category,
@@ -442,7 +459,7 @@ class Memory:
                 provenance=provenance,
                 confidence=confidence,
                 session_id=session_id,
-                task_id=task_id,
+                scopes=new_scopes,
                 host=host,
                 agent=agent,
                 source=source,
@@ -467,10 +484,22 @@ class Memory:
             return atom
 
     def log_turn(
-        self, session_id: str, role: str, content: str, task_id: str | None = None
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        task_id: str | None = None,
+        scopes: list[str] | None = None,
+        agent: str | None = None,
     ) -> None:
+        """Append one raw turn. `task_id` is the session's own (primary)
+        scope; `scopes` lists other scopes this turn touched (repos read or
+        edited via tool calls) — distillation offers them as candidates.
+        `agent` (e.g. "claude-code@host") is inherited by distilled atoms."""
         with self._lock:
-            self.sessions.append_turn(session_id, role, content, task_id=task_id)
+            self.sessions.append_turn(
+                session_id, role, content, task_id=task_id, scopes=scopes, agent=agent
+            )
 
     def forget(self, atom_id: str) -> bool:
         """Delete with provenance-chain cleanup. Returns False if the
@@ -490,34 +519,215 @@ class Memory:
         task_id: str | None = _ALL_SCOPES,
         host: str | None = _ALL_SCOPES,
     ) -> int:
-        """Delete every atom ingested from `source`. Returns the count removed.
+        """Remove every atom ingested from `source`. Returns the count of
+        atoms removed (from the requested scope, or entirely).
 
-        By default (`task_id`/`host` omitted) this matches every scope —
-        the unscoped "wipe this source everywhere" behavior the CLI and
-        REST surface use. Passing `task_id`/`host` narrows the match to
-        atoms in EXACTLY that scope (equality, not the recall `_visible`
-        OR-global rule — this is a deletion, not a read), so re-ingesting
-        a changed file under one task never deletes another task's (or
-        the global scope's) copy of the same source path. `ingest.py`
-        always passes its own `task_id` for this reason.
+        By default (`task_id`/`host` omitted) this deletes the source's
+        atoms in every scope — the unscoped "wipe this source everywhere"
+        behavior the CLI and REST surface use. Passing `task_id` (None =
+        the global scope) narrows it to REMOVING THAT ONE SCOPE from each
+        matching atom's scope set (membership, not the recall `_visible`
+        OR-global rule — this is a deletion, not a read); an atom is only
+        deleted once its scope set is empty. So re-ingesting a changed file
+        under one task never deletes another task's (or the global scope's)
+        claim on the same content. `ingest.py` always passes its own
+        `task_id` for this reason. `host` narrows by exact host equality.
         """
         with self._lock:
             ids = self.graph.ids_by_source(source)
-            if task_id is not _ALL_SCOPES or host is not _ALL_SCOPES:
-                atoms = self.graph.get_atoms(ids)
-                ids = [
-                    aid
-                    for aid in ids
-                    if aid in atoms
-                    and (task_id is _ALL_SCOPES or atoms[aid].task_id == task_id)
-                    and (host is _ALL_SCOPES or atoms[aid].host == host)
-                ]
+            atoms = self.graph.get_atoms(ids)
+            if host is not _ALL_SCOPES:
+                ids = [aid for aid in ids if aid in atoms and atoms[aid].host == host]
+            removed = 0
             for atom_id in ids:
-                self.vectors.delete(atom_id)
-                self.keyword.delete(atom_id)
-                self.graph.delete_atom(atom_id)
+                atom = atoms.get(atom_id)
+                if task_id is not _ALL_SCOPES and atom is not None:
+                    scope = task_id or GLOBAL_SCOPE
+                    if scope not in atom.scopes:
+                        continue
+                    remaining = [s for s in atom.scopes if s != scope]
+                    if remaining:
+                        self._rewrite_scopes(atom, remaining)
+                        self.sessions.log_provenance(
+                            atom_id, "scope", f"removed {scope or 'global'}: source removed: {source}"
+                        )
+                        removed += 1
+                        continue
+                self._delete_atom(atom_id)
                 self.sessions.log_provenance(atom_id, "forget", f"source removed: {source}")
-            return len(ids)
+                removed += 1
+            return removed
+
+    def _delete_atom(self, atom_id: str) -> None:
+        self.vectors.delete(atom_id)
+        self.keyword.delete(atom_id)
+        self.graph.delete_atom(atom_id)
+
+    def _rewrite_scopes(self, atom: MemoryAtom, scopes: list[str]) -> MemoryAtom:
+        """Persist `atom` with a new (non-empty) scope set across all three
+        stores. Reuses the stored embedding when there is one, so re-scoping
+        works even with the embedding backend down."""
+        updated = atom.model_copy(
+            update={"scopes": normalize_scopes(scopes), "updated_at": datetime.now(UTC)}
+        )
+        vector = self.vectors.get_vector(atom.id)
+        self.vectors.upsert(updated, vector if vector is not None else self._embed(atom.content))
+        self.graph.add_atom(updated)
+        self.keyword.add(updated)
+        return updated
+
+    # -- scope management ---------------------------------------------------------
+
+    def set_scopes(
+        self,
+        atom_id: str,
+        scopes: list[str] | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        resolve_review: bool = True,
+    ) -> MemoryAtom:
+        """Change an atom's scope set: replace it with `scopes`, and/or
+        `add`/`remove` individual keys (GLOBAL_SCOPE "" = global). Removing
+        every scope is refused — use `forget()` to delete. Raises KeyError
+        for an unknown atom, ValueError for an empty result.
+
+        `resolve_review=True` (CLI/REST/MCP: a human deciding) also resolves
+        a pending scope review — which can upgrade an `unverified_global`
+        memory's provenance. Internal pipeline bookkeeping (distillation
+        widening or splitting scopes) MUST pass False: no human was asked,
+        so nothing may be confirmed or upgraded."""
+        with self._lock:
+            atom = self.graph.get_atom(atom_id)
+            if atom is None:
+                raise KeyError(f"no such atom: {atom_id}")
+            if scopes is not None and not scopes:
+                raise ValueError("an empty scope set is ambiguous: pass [\"\"] (global) explicitly")
+            current = set(normalize_scopes(scopes)) if scopes is not None else set(atom.scopes)
+            current |= set(add or [])
+            current -= set(remove or [])
+            if not current:
+                raise ValueError("an atom must keep at least one scope (use forget to delete it)")
+            new_scopes = normalize_scopes(current)
+            updated = atom
+            if new_scopes != atom.scopes:
+                updated = self._rewrite_scopes(atom, new_scopes)
+                self.sessions.log_provenance(
+                    atom_id, "scope", f"{_fmt_scopes(atom.scopes)} -> {_fmt_scopes(new_scopes)}"
+                )
+            return self._resolve_review(updated) if resolve_review else updated
+
+    # -- scope review queue (docs/design/scoping-v2.md §4) -------------------------
+
+    SCOPE_REVIEW_EXPIRE_AFTER = 5  # distinct sessions a question is shown in before it stops asking
+
+    def queue_scope_review(
+        self, atom_id: str, kind: str, reason: str, candidates: list[str] | None = None
+    ) -> bool:
+        """Ask the user (via the context hook) to decide `atom_id`'s scope.
+        `kind`: "ambiguous" (extractor unsure) or "unverified_global" (a
+        claimed-global instruction/preference the trust boundary couldn't
+        confirm from the user's own words). Never re-queues an atom whose
+        scope the user already confirmed."""
+        queue = getattr(self.sessions, "queue_scope_review", None)
+        if queue is None:
+            return False
+        with self._lock:
+            return queue(atom_id, kind, reason, candidates)
+
+    def pending_scope_reviews(self, limit: int = 3, session_key: str | None = None) -> list[dict]:
+        """Up to `limit` memories awaiting a scope decision. With
+        `session_key`, each is returned at most once per session and counted
+        as shown; after `SCOPE_REVIEW_EXPIRE_AFTER` sessions unanswered it
+        expires (the extractor's call stands). Without one this is a
+        read-only listing (`memstrand review`)."""
+        reviews_fn = getattr(self.sessions, "scope_reviews", None)
+        if reviews_fn is None:
+            return []
+        with self._lock:
+            out: list[dict] = []
+            for review in reviews_fn("pending"):
+                if len(out) >= limit:
+                    break
+                atom = self.graph.get_atom(review["atom_id"])
+                if atom is None:
+                    self.sessions.resolve_scope_review(review["atom_id"], "expired")
+                    continue
+                if session_key is not None:
+                    if session_key in review["shown_sessions"]:
+                        continue
+                    self.sessions.mark_scope_review_shown(
+                        atom.id, session_key, self.SCOPE_REVIEW_EXPIRE_AFTER
+                    )
+                out.append(
+                    {
+                        "id": atom.id, "content": atom.content, "category": atom.category.value,
+                        "scopes": list(atom.scopes), "kind": review["kind"],
+                        "reason": review["reason"], "candidates": review["candidates"],
+                    }
+                )
+            return out
+
+    def confirm_scopes(self, atom_id: str) -> MemoryAtom:
+        """Keep the atom's current scopes and mark them user-confirmed."""
+        with self._lock:
+            atom = self.graph.get_atom(atom_id)
+            if atom is None:
+                raise KeyError(f"no such atom: {atom_id}")
+            return self._resolve_review(atom)
+
+    def _resolve_review(self, atom: MemoryAtom) -> MemoryAtom:
+        """Mark a pending review confirmed. A user deciding an
+        `unverified_global` memory's scope (global or specific repos) is the
+        corroboration the trust boundary couldn't get automatically — they
+        vouch it's theirs — so its provenance becomes `validated` (eligible
+        as a standing instruction again)."""
+        status_fn = getattr(self.sessions, "scope_review_status", None)
+        if status_fn is None or status_fn(atom.id) != "pending":
+            return atom
+        kind = next(
+            (r["kind"] for r in self.sessions.scope_reviews("pending") if r["atom_id"] == atom.id), None
+        )
+        self.sessions.resolve_scope_review(atom.id, "confirmed")
+        self.sessions.log_provenance(atom.id, "scope", f"confirmed by user: {_fmt_scopes(atom.scopes)}")
+        if kind == "unverified_global" and atom.provenance == Provenance.inferred:
+            atom = atom.model_copy(update={"provenance": Provenance.validated, "updated_at": datetime.now(UTC)})
+            vector = self.vectors.get_vector(atom.id)
+            self.vectors.upsert(atom, vector if vector is not None else self._embed(atom.content))
+            self.graph.add_atom(atom)
+            self.keyword.add(atom)
+            self.sessions.log_provenance(atom.id, "validate", "user confirmed global scope")
+        return atom
+
+    def rename_scope(self, old: str, new: str) -> int:
+        """Re-key every atom in scope `old` to scope `new` (e.g. a folder
+        name to its git remote URL, or a repo that moved hosts). Returns
+        the number of atoms changed."""
+        old_key = normalize_scopes([old])[0]
+        new_key = normalize_scopes([new])[0]
+        if old_key == new_key:
+            return 0
+        with self._lock:
+            changed = 0
+            for atom in list(self._iter_all_atoms()):
+                if old_key not in atom.scopes:
+                    continue
+                scopes = [new_key if s == old_key else s for s in atom.scopes]
+                self._rewrite_scopes(atom, scopes)
+                self.sessions.log_provenance(
+                    atom.id, "scope", f"renamed {old_key or 'global'} -> {new_key or 'global'}"
+                )
+                changed += 1
+            return changed
+
+    def scopes_summary(self) -> dict[str, int]:
+        """Atom count per scope key ("" = global). A multi-scope atom is
+        counted once under each of its scopes."""
+        with self._lock:
+            counts: dict[str, int] = {}
+            for atom in self._iter_all_atoms():
+                for scope in atom.scopes:
+                    counts[scope] = counts.get(scope, 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
     def _supersedes_head(self, atom_id: str) -> str:
         """Walk forward along `supersedes` edges to the current head of
@@ -587,7 +797,7 @@ class Memory:
                 provenance=Provenance.corrected,
                 confidence=confidence if confidence is not None else old.confidence,
                 session_id=old.session_id,
-                task_id=old.task_id,
+                scopes=old.scopes,
                 host=old.host,
                 source=old.source,
                 source_ref=old.source_ref,
@@ -615,10 +825,13 @@ class Memory:
         include_superseded: bool = False,
         track: bool = True,
         min_relevance: float | None = None,
+        scopes: list[str] | None = None,
     ) -> list[dict]:
         """Hybrid (dense + keyword) scoped recall. Scope is a hard filter:
         a scoped query sees its own scope PLUS globals; an unscoped query
-        sees only globals — the Playwright-bug fix, generalized. Results
+        sees only globals — the Playwright-bug fix, generalized. The query
+        scope is `scopes` (any number of scope keys) plus the legacy
+        `task_id`; an atom is visible if it shares any of them. Results
         are hydrated with graph neighbors; contradictions are surfaced,
         never hidden. `track=False` is for internal callers (judge,
         consolidation) that must not mutate access stats or edge weights.
@@ -638,7 +851,7 @@ class Memory:
                 return []
             now = datetime.now(UTC)
             q = ScopedQuery(
-                text=query, session_id=session_id, task_id=task_id,
+                text=query, session_id=session_id, scopes=_query_scopes(task_id, scopes),
                 host=host, categories=categories, limit=limit,
             )
             candidate_limit = max(limit * 3, limit)
@@ -721,7 +934,7 @@ class Memory:
             for aid in top_ids:
                 rows = []
                 for n_atom, edge in self.graph.neighbors(aid, depth=1):
-                    if not self._visible(n_atom, q.task_id, q.host, now):
+                    if not self._visible(n_atom, q.scopes, q.host, now):
                         continue
                     direction = "out" if edge.source_id == aid else "in"
                     rows.append(
@@ -746,6 +959,7 @@ class Memory:
                         "provenance": atom.provenance.value,
                         "confidence": atom.confidence,
                         "task_id": atom.task_id,
+                        "scopes": list(atom.scopes),
                         "host": atom.host,
                         "source": atom.source,
                         "source_ref": atom.source_ref,
@@ -779,6 +993,7 @@ class Memory:
         task_id: str | None = None,
         host: str | None = None,
         scoped: bool = False,
+        scopes: list[str] | None = None,
     ) -> dict | None:
         """Fetch one atom by id with its graph neighbors and provenance
         history. This is an OWNER-FACING browse surface (CLI `show`, the web
@@ -792,16 +1007,17 @@ class Memory:
         don't add one that calls `get()` unscoped)."""
         with self._lock:
             now = datetime.now(UTC)
+            query_scopes = _query_scopes(task_id, scopes)
             atom = self.graph.get_atom(atom_id)
             if atom is None:
                 return None
-            if scoped and not self._visible(atom, task_id, host, now):
+            if scoped and not self._visible(atom, query_scopes, host, now):
                 return None
             superseded = atom_id in self.graph.superseded_ids([atom_id])
             d = self.atom_to_dict(atom, superseded=superseded)
             neighbor_rows = []
             for n_atom, edge in self.graph.neighbors(atom_id, depth=1):
-                if scoped and not self._visible(n_atom, task_id, host, now):
+                if scoped and not self._visible(n_atom, query_scopes, host, now):
                     continue
                 direction = "out" if edge.source_id == atom_id else "in"
                 neighbor_rows.append(
@@ -813,6 +1029,8 @@ class Memory:
                 )
             d["neighbors"] = neighbor_rows
             d["history"] = self.sessions.history(atom_id)
+            status_fn = getattr(self.sessions, "scope_review_status", None)
+            d["scope_status"] = (status_fn(atom_id) if status_fn else None) or "inferred"
             return d
 
     def list(
@@ -822,11 +1040,12 @@ class Memory:
         host: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        agent: str | None = None,
     ) -> list[dict]:
         with self._lock:
             cat_value = category.value if isinstance(category, Category) else category
             atoms = self.graph.list_atoms(
-                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset
+                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent
             )
             if not atoms:
                 return []
@@ -840,6 +1059,7 @@ class Memory:
         host: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        agent: str | None = None,
     ) -> tuple[list[dict], int]:
         """Same filtering/pagination as `list()`, plus the total count of
         atoms matching the filter (not just this page) — for a caller
@@ -848,9 +1068,9 @@ class Memory:
         with self._lock:
             cat_value = category.value if isinstance(category, Category) else category
             atoms = self.graph.list_atoms(
-                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset
+                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent
             )
-            total = self.graph.count_atoms(category=cat_value, task_id=task_id, host=host)
+            total = self.graph.count_atoms(category=cat_value, task_id=task_id, host=host, agent=agent)
             if not atoms:
                 return [], total
             superseded = self.graph.superseded_ids([a.id for a in atoms])
@@ -866,8 +1086,9 @@ class Memory:
             by_task: dict[str, int] = {}
             for atom in self._iter_all_atoms():
                 by_category[atom.category.value] = by_category.get(atom.category.value, 0) + 1
-                key = atom.task_id or "global"
-                by_task[key] = by_task.get(key, 0) + 1
+                for scope in atom.scopes:
+                    key = scope or "global"
+                    by_task[key] = by_task.get(key, 0) + 1
             return {
                 "atoms": self.graph.count_atoms(),
                 "edges": len(self.graph.all_edges()),
@@ -887,7 +1108,9 @@ class Memory:
             "confidence": atom.confidence,
             "session_id": atom.session_id,
             "task_id": atom.task_id,
+            "scopes": list(atom.scopes),
             "host": atom.host,
+            "agent": atom.agent,
             "source": atom.source,
             "source_ref": atom.source_ref,
             "created_at": atom.created_at.isoformat(),
@@ -901,7 +1124,7 @@ class Memory:
     # -- context injection -------------------------------------------------------
 
     def _standing_instructions(
-        self, task_id: str | None, host: str | None, now: datetime, cap: int
+        self, scopes: list[str], host: str | None, now: datetime, cap: int
     ) -> list[dict]:
         """instruction + preference atoms visible in scope (globals + this
         task/host), non-expired, non-superseded, highest confidence first.
@@ -919,10 +1142,9 @@ class Memory:
         actual user turn (see `pipeline/distill.py`'s trust-boundary
         enforcement, which downgrades those to `inferred`) from ever
         becoming a standing instruction even if it slips into global scope."""
-        scopes = {"", task_id} if task_id else {""}
         atoms: dict[str, MemoryAtom] = {}
         for category in (Category.instruction, Category.preference):
-            for scope in scopes:
+            for scope in {GLOBAL_SCOPE, *scopes}:
                 # host is intentionally NOT passed to list_atoms here (it
                 # would hard-filter instead of OR-with-global): `_visible`
                 # below applies the real global-or-this-host rule.
@@ -935,7 +1157,7 @@ class Memory:
             a
             for aid, a in atoms.items()
             if aid not in superseded
-            and self._visible(a, task_id, host, now)
+            and self._visible(a, scopes, host, now)
             and a.provenance in _TRUSTED_STANDING_PROVENANCE
         ]
         visible.sort(key=lambda a: a.confidence, reverse=True)
@@ -948,18 +1170,20 @@ class Memory:
         host: str | None = None,
         limit: int = 8,
         max_chars: int = 4000,
+        scopes: list[str] | None = None,
     ) -> str:
         """Markdown block for a system prompt: standing instructions and
         preferences first, then query-relevant memories. Empty string if
-        there is nothing to say."""
+        there is nothing to say. Scope = `scopes` plus the legacy `task_id`."""
         with self._lock:
             now = datetime.now(UTC)
-            standing = self._standing_instructions(task_id, host, now, cap=25)
+            query_scopes = _query_scopes(task_id, scopes)
+            standing = self._standing_instructions(query_scopes, host, now, cap=25)
             listed_ids = {a["id"] for a in standing}
 
             relevant_lines: list[str] = []
             if query:
-                hits = self.recall(query, task_id=task_id, host=host, limit=limit, track=True)
+                hits = self.recall(query, scopes=query_scopes, host=host, limit=limit, track=True)
                 for h in hits:
                     if h["id"] in listed_ids:
                         continue

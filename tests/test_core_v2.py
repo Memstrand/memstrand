@@ -78,12 +78,17 @@ def test_scope_sees_own_task_plus_globals(mem):
     assert "the home lab router is a UDM Pro" not in unscoped_hits
 
 
-def test_scope_aware_ids_same_text_two_tasks(mem):
+def test_same_text_two_tasks_merges_into_one_multi_scope_atom(mem):
+    """Scoping v2: ids are content-only, so the same fact learned in a
+    second task widens the existing atom's scope set (no sibling atom)."""
     a = mem.remember("the deploy key rotates monthly", task_id="task-a")
     b = mem.remember("the deploy key rotates monthly", task_id="task-b")
-    assert a.id != b.id
-    assert mem.recall("deploy key rotates", task_id="task-a") != []
-    assert all(h["id"] != b.id for h in mem.recall("deploy key rotates", task_id="task-a"))
+    assert a.id == b.id
+    assert b.scopes == ["task-a", "task-b"]
+    assert [h["id"] for h in mem.recall("deploy key rotates", task_id="task-a")] == [a.id]
+    assert [h["id"] for h in mem.recall("deploy key rotates", task_id="task-b")] == [a.id]
+    assert mem.recall("deploy key rotates", task_id="task-c") == []
+    assert mem.recall("deploy key rotates") == []
 
 
 def test_re_remember_preserves_created_at(mem):

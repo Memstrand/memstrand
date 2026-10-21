@@ -1,10 +1,13 @@
 """Qdrant-backed VectorStore. Scope lives in the payload filter.
 
 Scoping rule (the Playwright-bug fix, generalized for globals):
-  - task_id / host are HARD filters. A scoped query sees its own scope
-    PLUS global atoms (task_id == "" / host == ""): task_id in
-    {query.task_id, ""}. An UNSCOPED query only sees globals — it can
-    never see task-scoped memories. Same rule for host.
+  - scopes / host are HARD filters. Each point carries its atom's scope
+    SET as a list payload (the global scope is the member ""); a query
+    sees a point if any of its scopes is in {*query.scopes, ""}. An
+    UNSCOPED query only sees globals — it can never see task-scoped
+    memories. Pre-v2 points carry a single `task_id` string instead and
+    are matched the same way until migration rewrites them. Same
+    global-or-mine rule for host.
   - session_id is provenance, not a recall filter. Sessions scope the L1
     fast cache and distillation provenance; semantic recall is
     deliberately cross-session within a scope.
@@ -204,6 +207,7 @@ class QdrantVectorStore:
         real Qdrant server (see `_is_remote` above) — best-effort regardless,
         since index creation isn't essential to correctness."""
         for key, schema in (
+            ("scopes", PayloadSchemaType.KEYWORD),
             ("task_id", PayloadSchemaType.KEYWORD),
             ("host", PayloadSchemaType.KEYWORD),
             ("category", PayloadSchemaType.KEYWORD),
@@ -215,8 +219,15 @@ class QdrantVectorStore:
                 pass
 
     def _scope_filter(self, query: ScopedQuery, now: float | None = None) -> Filter:
+        visible = [*query.scopes, ""]
         must = [
-            FieldCondition(key="task_id", match=MatchAny(any=[query.task_id or "", ""])),
+            Filter(
+                should=[
+                    FieldCondition(key="scopes", match=MatchAny(any=visible)),
+                    # pre-v2 points (single `task_id`), until migrated
+                    FieldCondition(key="task_id", match=MatchAny(any=visible)),
+                ]
+            ),
             FieldCondition(key="host", match=MatchAny(any=[query.host or "", ""])),
         ]
         if query.categories:
@@ -268,7 +279,7 @@ class QdrantVectorStore:
                         "category": atom.category.value,
                         "content": atom.content,
                         "session_id": atom.session_id or "",
-                        "task_id": atom.task_id or "",
+                        "scopes": list(atom.scopes),
                         "host": atom.host or "",
                         "confidence": atom.confidence,
                         "provenance": atom.provenance.value,
@@ -290,6 +301,19 @@ class QdrantVectorStore:
             collection_name=COLLECTION, ids=[_point_id(atom_id)], with_vectors=False
         )
         return len(records) > 0
+
+    def get_vector(self, atom_id: str) -> list[float] | None:
+        """The stored embedding for `atom_id`, or None. Lets callers re-key
+        or re-scope a point (migration, `Memory.set_scopes`) without
+        re-embedding its content."""
+        if not self._collection_known():
+            return None
+        records = self.client.retrieve(
+            collection_name=COLLECTION, ids=[_point_id(atom_id)], with_vectors=True
+        )
+        if not records or records[0].vector is None:
+            return None
+        return list(records[0].vector)
 
     def search(
         self,

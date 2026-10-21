@@ -79,6 +79,7 @@ from .config import ConfigError, Settings, get_settings, resolve_llm_api_key
 from .mcp_server import build_mcp
 from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
+from .scopes import agent_name
 
 logger = logging.getLogger("memstrand.server")
 
@@ -100,6 +101,18 @@ def _parse_category(value: str) -> Category:
         return Category(value)
     except ValueError:
         raise ValueError(f"invalid category {value!r}; must be one of {_CATEGORY_VALUES}") from None
+
+
+def _parse_scopes(value) -> list[str] | None:
+    """Optional `scopes` field: a list of scope keys ("" = global). Absent/
+    null = not given (callers fall back to the legacy `task_id`)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError("scopes must be a list of strings")
+    return value
 
 
 def _origin_from_referer(referer: str) -> str | None:
@@ -401,6 +414,7 @@ async def _remember(request: Request) -> Response:
         data.get("source"),
         data.get("source_ref"),
         data.get("agent"),
+        _parse_scopes(data.get("scopes")),
     )
     return JSONResponse(Memory.atom_to_dict(atom))
 
@@ -423,6 +437,7 @@ async def _recall(request: Request) -> Response:
         categories,
         limit,
         bool(data.get("include_superseded", False)),
+        scopes=_parse_scopes(data.get("scopes")),
     )
     return JSONResponse({"results": results})
 
@@ -436,6 +451,7 @@ async def _atoms_list(request: Request) -> Response:
     # absent task_id = no filter (None); present-but-empty = global only ("")
     task_id = params.get("task_id")
     host = params.get("host") or None
+    agent = params.get("agent") or None
     limit = _parse_bounded_int(params.get("limit"), name="limit", default=100, minimum=0, maximum=1000)
     offset = _parse_bounded_int(params.get("offset"), name="offset", default=0, minimum=0)
     mem: Memory = request.app.state.mem
@@ -447,7 +463,8 @@ async def _atoms_list(request: Request) -> Response:
     # directly and never materializes the full unfiltered table just to
     # count it.
     atoms, total = await run_in_threadpool(
-        mem.list_page, category=category, task_id=task_id, host=host, limit=limit, offset=offset
+        mem.list_page, category=category, task_id=task_id, host=host, limit=limit, offset=offset,
+        agent=agent,
     )
     return JSONResponse({"atoms": atoms, "total": total})
 
@@ -463,7 +480,8 @@ async def _atom_detail(request: Request) -> Response:
     scoped = params.get("scoped") in ("1", "true", "True")
     task_id = params.get("task_id")
     host = params.get("host")
-    detail = await run_in_threadpool(mem.get, atom_id, task_id, host, scoped)
+    scopes = params.getlist("scope") or None
+    detail = await run_in_threadpool(mem.get, atom_id, task_id, host, scoped, scopes)
     if detail is None:
         return JSONResponse({"error": f"no such atom: {atom_id}"}, status_code=404)
     return JSONResponse(detail)
@@ -509,7 +527,10 @@ async def _turns(request: Request) -> Response:
                 raise ValueError("each turn requires session_id, role, content")
             if role not in _VALID_ROLES:
                 raise ValueError(f"invalid role {role!r}; must be one of {list(_VALID_ROLES)}")
-            mem.log_turn(session_id, role, content, task_id=t.get("task_id"))
+            mem.log_turn(
+                session_id, role, content, task_id=t.get("task_id"),
+                scopes=_parse_scopes(t.get("scopes")), agent=t.get("agent"),
+            )
 
     await run_in_threadpool(_run)
     return JSONResponse({"ok": True})
@@ -533,7 +554,11 @@ async def _answer(request: Request) -> Response:
         raise ValueError("question is required")
     mem: Memory = request.app.state.mem
     ans = await run_in_threadpool(
-        mem.grounded_answer, question, task_id=data.get("task_id"), host=data.get("host")
+        mem.grounded_answer,
+        question,
+        task_id=data.get("task_id"),
+        host=data.get("host"),
+        scopes=_parse_scopes(data.get("scopes")),
     )
     return JSONResponse({"answer": ans})
 
@@ -549,8 +574,63 @@ async def _context(request: Request) -> Response:
         data.get("host"),
         int(data.get("limit", 8)),
         int(data.get("max_chars", 4000)),
+        _parse_scopes(data.get("scopes")),
     )
     return JSONResponse({"context": ctx})
+
+
+@_json_errors
+async def _atom_scopes(request: Request) -> Response:
+    """POST {"set": [...]?, "add": [...]?, "remove": [...]?} -> the atom."""
+    mem: Memory = request.app.state.mem
+    data = await _body(request)
+    atom_id = request.path_params["atom_id"]
+    if data.get("keep"):
+        atom = await run_in_threadpool(mem.confirm_scopes, atom_id)
+    else:
+        atom = await run_in_threadpool(
+            mem.set_scopes,
+            atom_id,
+            _parse_scopes(data.get("set")),
+            _parse_scopes(data.get("add")),
+            _parse_scopes(data.get("remove")),
+        )
+    return JSONResponse(Memory.atom_to_dict(atom))
+
+
+@_json_errors
+async def _reviews(request: Request) -> Response:
+    """GET ?limit=: read-only listing of pending scope reviews. POST
+    {"limit", "session"}: the next reviews for that session, each returned
+    once per session and counted as shown (state change => POST, so the
+    mutating-request CSRF guard applies and a web page can't burn the queue)."""
+    mem: Memory = request.app.state.mem
+    if request.method == "GET":
+        limit_raw, session = request.query_params.get("limit"), None
+    else:
+        data = await _body(request)
+        limit_raw, session = data.get("limit"), data.get("session")
+        if not isinstance(session, str) or not session:
+            raise ValueError("session is required")
+    limit = _parse_bounded_int(limit_raw, name="limit", default=3, minimum=1, maximum=100)
+    reviews = await run_in_threadpool(mem.pending_scope_reviews, limit, session)
+    return JSONResponse({"reviews": reviews})
+
+
+@_json_errors
+async def _scopes_list(request: Request) -> Response:
+    mem: Memory = request.app.state.mem
+    return JSONResponse({"scopes": await run_in_threadpool(mem.scopes_summary)})
+
+
+@_json_errors
+async def _scopes_rename(request: Request) -> Response:
+    data = await _body(request)
+    old, new = data.get("old"), data.get("new")
+    if not isinstance(old, str) or not isinstance(new, str):
+        raise ValueError("old and new are required strings")  # noqa: TRY004 - ValueError -> HTTP 400
+    mem: Memory = request.app.state.mem
+    return JSONResponse({"renamed": await run_in_threadpool(mem.rename_scope, old, new)})
 
 
 @_json_errors
@@ -601,7 +681,13 @@ async def _forget_source(request: Request) -> Response:
     if not source:
         raise ValueError("source is required")
     mem: Memory = request.app.state.mem
-    n = await run_in_threadpool(mem.forget_source, source)
+    if "scope" in data:  # remove just this scope ("" = global) from the source's atoms
+        scope = data["scope"]
+        if not isinstance(scope, str):
+            raise ValueError("scope must be a string")
+        n = await run_in_threadpool(mem.forget_source, source, scope)
+    else:
+        n = await run_in_threadpool(mem.forget_source, source)
     return JSONResponse({"forgot": n})
 
 
@@ -690,14 +776,21 @@ async def _v1_chat_completions(request: Request) -> Response:
 
     disable = request.headers.get("x-memstrand-disable") == "1"
     task_id = request.headers.get("x-memstrand-task") or settings.default_task
+    header_scopes = [x.strip() for x in request.headers.get("x-memstrand-scopes", "").split(",") if x.strip()]
+    proxy_agent = agent_name("openai-proxy")
     session_id = request.headers.get("x-memstrand-session") or f"proxy-{datetime.now(UTC).date().isoformat()}"
     messages = body.get("messages", [])
     user_text = _last_user_text(messages)
 
     if not disable:
         if user_text:
-            await run_in_threadpool(mem.log_turn, session_id, "user", user_text, task_id)
-        block = await run_in_threadpool(mem.context, user_text, task_id) if user_text else ""
+            await run_in_threadpool(
+                functools.partial(mem.log_turn, session_id, "user", user_text, task_id, agent=proxy_agent)
+            )
+        block = (
+            await run_in_threadpool(functools.partial(mem.context, user_text, task_id, scopes=header_scopes or None))
+            if user_text else ""
+        )
         if block:
             body = {**body, "messages": _inject_system_block(messages, block)}
 
@@ -713,7 +806,9 @@ async def _v1_chat_completions(request: Request) -> Response:
         if not disable:
             try:
                 reply = resp.json()["choices"][0]["message"]["content"]
-                await run_in_threadpool(mem.log_turn, session_id, "assistant", reply, task_id)
+                await run_in_threadpool(
+                    functools.partial(mem.log_turn, session_id, "assistant", reply, task_id, agent=proxy_agent)
+                )
             except (KeyError, IndexError, ValueError, json.JSONDecodeError):
                 pass
         return Response(
@@ -768,7 +863,11 @@ async def _v1_chat_completions(request: Request) -> Response:
         finally:
             await resp.aclose()
             if ok and not disable and collected:
-                await run_in_threadpool(mem.log_turn, session_id, "assistant", "".join(collected), task_id)
+                await run_in_threadpool(
+                    functools.partial(
+                        mem.log_turn, session_id, "assistant", "".join(collected), task_id, agent=proxy_agent
+                    )
+                )
 
     return StreamingResponse(_stream_and_log(), media_type="text/event-stream")
 
@@ -935,6 +1034,10 @@ def create_app(
         Route("/api/atoms/{atom_id}", _atom_detail, methods=["GET"]),
         Route("/api/atoms/{atom_id}", _atom_update, methods=["PATCH"]),
         Route("/api/atoms/{atom_id}", _atom_delete, methods=["DELETE"]),
+        Route("/api/atoms/{atom_id}/scopes", _atom_scopes, methods=["POST"]),
+        Route("/api/scopes", _scopes_list, methods=["GET"]),
+        Route("/api/reviews", _reviews, methods=["GET", "POST"]),
+        Route("/api/scopes/rename", _scopes_rename, methods=["POST"]),
         Route("/api/turns", _turns, methods=["POST"]),
         Route("/api/improve", _improve, methods=["POST"]),
         Route("/api/answer", _answer, methods=["POST"]),

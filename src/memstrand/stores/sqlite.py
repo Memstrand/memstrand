@@ -13,12 +13,14 @@ never reads or writes it again.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
 import time
 
 from ..config import ensure_private_dir, secure_file
+from ..schema import decode_scopes, encode_scopes
 
 
 class SqliteSessionStore:
@@ -53,6 +55,15 @@ class SqliteSessionStore:
                     session_id TEXT, task_id TEXT, role TEXT,
                     content TEXT, ts REAL)"""
             )
+            # scoping v2 phase 2: scope keys this turn TOUCHED (repos read/
+            # edited via tool calls, paths in the prompt), as encoded scopes
+            # ("" = none recorded). Added in place for pre-existing DBs.
+            cols = {row[1] for row in self.conn.execute("PRAGMA table_info(turns)")}
+            if "scopes" not in cols:
+                self.conn.execute("ALTER TABLE turns ADD COLUMN scopes TEXT DEFAULT ''")
+            # scoping v2 phase 4: who logged the turn ("claude-code@host", ...)
+            if "agent" not in cols:
+                self.conn.execute("ALTER TABLE turns ADD COLUMN agent TEXT DEFAULT ''")
             # legacy single-row-per-atom ledger: untouched, kept for old DBs
             self.conn.execute(
                 """CREATE TABLE IF NOT EXISTS provenance(
@@ -68,6 +79,16 @@ class SqliteSessionStore:
                 "CREATE INDEX IF NOT EXISTS idx_provenance_log_atom ON provenance_log(atom_id)"
             )
             self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT)"
+            )
+            # scoping v2 phase 3: memories whose scope needs the user's call
+            self.conn.execute(
+                """CREATE TABLE IF NOT EXISTS scope_review(
+                    atom_id TEXT PRIMARY KEY, kind TEXT, reason TEXT,
+                    candidates TEXT, status TEXT, shown_sessions TEXT,
+                    created_ts REAL, resolved_ts REAL)"""
+            )
+            self.conn.execute(
                 """CREATE TABLE IF NOT EXISTS distill_state(
                     session_id TEXT PRIMARY KEY,
                     last_turn_id INTEGER, ts REAL)"""
@@ -78,25 +99,36 @@ class SqliteSessionStore:
 
     def append_turn(
         self, session_id: str, role: str, content: str, task_id: str | None = None,
-        ts: float | None = None,
+        ts: float | None = None, scopes: list[str] | None = None, agent: str | None = None,
     ) -> None:
+        touched = [s for s in (scopes or []) if s]
         with self._lock:
             self.conn.execute(
-                "INSERT INTO turns(session_id, task_id, role, content, ts) VALUES (?,?,?,?,?)",
-                (session_id, task_id or "", role, content, ts if ts is not None else time.time()),
+                "INSERT INTO turns(session_id, task_id, role, content, ts, scopes, agent) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    session_id, task_id or "", role, content,
+                    ts if ts is not None else time.time(),
+                    encode_scopes(touched) if touched else "",
+                    agent or "",
+                ),
             )
             self.conn.commit()
 
     def get_session(self, session_id: str, after_id: int = 0) -> list[dict]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT id, role, content, ts, task_id FROM turns "
+                "SELECT id, role, content, ts, task_id, scopes, agent FROM turns "
                 "WHERE session_id=? AND id > ? ORDER BY id",
                 (session_id, after_id),
             ).fetchall()
         return [
-            {"id": i, "role": r, "content": c, "ts": t, "task_id": tid or None}
-            for i, r, c, t, tid in rows
+            {
+                "id": i, "role": r, "content": c, "ts": t, "task_id": tid or None,
+                "scopes": [s for s in decode_scopes(sc) if s] if sc else [],
+                "agent": ag or None,
+            }
+            for i, r, c, t, tid, sc, ag in rows
         ]
 
     def list_sessions(self, task_id: str | None = None) -> list[str]:
@@ -173,6 +205,112 @@ class SqliteSessionStore:
                 (atom_id,),
             ).fetchall()
         return [{"action": a, "detail": d, "ts": t} for a, d, t in rows]
+
+    def copy_history(self, from_atom_id: str, to_atom_id: str) -> int:
+        """Append copies of `from_atom_id`'s ledger entries (original
+        timestamps kept) under `to_atom_id` -- used when an atom is re-keyed
+        or merged, so its history follows it. The ledger stays append-only:
+        the original rows are left untouched. Rows already present under
+        `to_atom_id` are skipped, so re-running an interrupted migration
+        doesn't duplicate history. Returns the number copied."""
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO provenance_log(atom_id, action, detail, ts) "
+                "SELECT ?, src.action, src.detail, src.ts FROM provenance_log src "
+                "WHERE src.atom_id=? AND NOT EXISTS ("
+                "  SELECT 1 FROM provenance_log dst WHERE dst.atom_id=? AND dst.action=src.action"
+                "  AND dst.detail=src.detail AND dst.ts=src.ts"
+                ") ORDER BY src.id",
+                (to_atom_id, from_atom_id, to_atom_id),
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    # -- scope review queue (scoping v2 phase 3) ------------------------------------
+
+    def queue_scope_review(
+        self, atom_id: str, kind: str, reason: str, candidates: list[str] | None = None
+    ) -> bool:
+        """Queue `atom_id` for a scope decision. No-op (False) if it already
+        has a review row — pending, or resolved: a user-confirmed scope is
+        never re-asked."""
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO scope_review(atom_id, kind, reason, candidates, status, "
+                "shown_sessions, created_ts, resolved_ts) VALUES (?,?,?,?, 'pending', '[]', ?, NULL)",
+                (atom_id, kind, reason, json.dumps(candidates or []), time.time()),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def scope_reviews(self, status: str | None = "pending") -> list[dict]:
+        q = ("SELECT atom_id, kind, reason, candidates, status, shown_sessions, created_ts "
+             "FROM scope_review")
+        args: tuple = ()
+        if status is not None:
+            q += " WHERE status=?"
+            args = (status,)
+        with self._lock:
+            rows = self.conn.execute(q + " ORDER BY created_ts", args).fetchall()
+        return [
+            {
+                "atom_id": a, "kind": k, "reason": r, "candidates": json.loads(c or "[]"),
+                "status": st, "shown_sessions": json.loads(sh or "[]"), "created_ts": ts,
+            }
+            for a, k, r, c, st, sh, ts in rows
+        ]
+
+    def mark_scope_review_shown(self, atom_id: str, session_key: str, expire_after: int) -> None:
+        """Record that a review was shown in `session_key`; once it has been
+        shown in `expire_after` distinct sessions without an answer it's
+        `expired` (the extractor's call stands, and it stops asking)."""
+        # Two single-statement UPDATEs (each atomic in SQLite), so concurrent
+        # hook processes can't lose an append the way a read-modify-write could.
+        with self._lock:
+            self.conn.execute(
+                "UPDATE scope_review SET shown_sessions = json_insert(shown_sessions, '$[#]', ?) "
+                "WHERE atom_id=? AND status='pending' "
+                "AND NOT EXISTS (SELECT 1 FROM json_each(scope_review.shown_sessions) WHERE value=?)",
+                (session_key, atom_id, session_key),
+            )
+            self.conn.execute(
+                "UPDATE scope_review SET status='expired', resolved_ts=? "
+                "WHERE atom_id=? AND status='pending' AND json_array_length(shown_sessions) >= ?",
+                (time.time(), atom_id, expire_after),
+            )
+            self.conn.commit()
+
+    def resolve_scope_review(self, atom_id: str, status: str = "confirmed") -> bool:
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE scope_review SET status=?, resolved_ts=? WHERE atom_id=? AND status='pending'",
+                (status, time.time(), atom_id),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def scope_review_status(self, atom_id: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT status FROM scope_review WHERE atom_id=?", (atom_id,)
+            ).fetchone()
+        return row[0] if row else None
+
+    # -- store metadata ---------------------------------------------------------------
+
+    def get_meta(self, key: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+            self.conn.commit()
 
     def dump_ledger(self) -> list[dict]:
         with self._lock:

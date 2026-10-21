@@ -26,6 +26,7 @@ from .client import RemoteError, open_local_memory, probe_daemon
 from .config import get_settings
 from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
+from .scopes import agent_name
 
 if TYPE_CHECKING:
     # `.api` pulls in qdrant_client -> fastembed -> onnxruntime; only
@@ -97,11 +98,14 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         ttl_days: float | None = None,
         session_id: str | None = None,
         source: str | None = None,
+        scopes: list[str] | None = None,
     ) -> dict[str, Any]:
         """Store one atomic, durable memory. Call this as soon as the user
         states a fact, preference, decision, instruction, or commitment —
         not for chit-chat or throwaway context. One atomic fact per call;
-        split compound statements into separate calls."""
+        split compound statements into separate calls. `scopes` lists the
+        repos/tasks it applies to (e.g. ["github.com/org/repo"]); omit both
+        it and `task_id` for a global memory."""
         atom = get_mem().remember(
             content,
             category=category,
@@ -112,8 +116,13 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
             host=host,
             ttl_days=ttl_days,
             source=source,
+            scopes=scopes,
+            agent=agent_name("mcp"),
         )
-        return {"id": atom.id, "category": atom.category.value, "task_id": atom.task_id}
+        return {
+            "id": atom.id, "category": atom.category.value,
+            "task_id": atom.task_id, "scopes": list(atom.scopes),
+        }
 
     @mcp.tool()
     @_guarded
@@ -124,6 +133,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         categories: list[Category] | None = None,
         limit: int = 10,
         include_superseded: bool = False,
+        scopes: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Scoped hybrid (semantic + keyword) recall. Call this at the
         start of a task and whenever you need context the user may have
@@ -138,6 +148,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
             categories=categories,
             limit=limit,
             include_superseded=include_superseded,
+            scopes=scopes,
         )
         return [
             {
@@ -148,6 +159,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
                 "provenance": h["provenance"],
                 "confidence": h["confidence"],
                 "task_id": h["task_id"],
+                "scopes": h["scopes"],
                 "source_ref": h["source_ref"],
                 "contradictions": [c["content"] for c in h["contradictions"]],
             }
@@ -156,19 +168,42 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
 
     @mcp.tool()
     @_guarded
-    def context(query: str | None = None, task_id: str | None = None) -> str:
+    def context(
+        query: str | None = None, task_id: str | None = None, scopes: list[str] | None = None
+    ) -> str:
         """Markdown memory block (standing instructions/preferences plus
         query-relevant memories), ready to drop straight into a system
         prompt. Empty string if there is nothing worth saying."""
-        return get_mem().context(query, task_id=task_id)
+        return get_mem().context(query, task_id=task_id, scopes=scopes)
 
     @mcp.tool()
     @_guarded
-    def answer(question: str, task_id: str | None = None) -> str:
+    def answer(question: str, task_id: str | None = None, scopes: list[str] | None = None) -> str:
         """Answer a question using ONLY stored memories — grounded, never
         hallucinated. Returns an "I don't know" message if nothing in
         memory covers the question."""
-        return get_mem().grounded_answer(question, task_id=task_id)
+        return get_mem().grounded_answer(question, task_id=task_id, scopes=scopes)
+
+    @mcp.tool()
+    @_guarded
+    def scope(
+        atom_id: str,
+        set_scopes: list[str] | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+        keep: bool = False,
+    ) -> dict[str, Any]:
+        """Change which repos/tasks a memory applies to. `set_scopes`
+        replaces the whole set; `add`/`remove` adjust it. "" means global.
+        `keep=True` confirms the current scopes unchanged. Use after asking
+        the user whether a memory applies everywhere or only to specific
+        repos — this also resolves its pending scope review."""
+        mem = get_mem()
+        if keep:
+            atom = mem.confirm_scopes(atom_id)
+        else:
+            atom = mem.set_scopes(atom_id, scopes=set_scopes, add=add, remove=remove)
+        return {"id": atom.id, "scopes": list(atom.scopes)}
 
     @mcp.tool()
     @_guarded
@@ -210,12 +245,14 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         role: Literal["user", "assistant", "system", "tool"],
         content: str,
         task_id: str | None = None,
+        scopes: list[str] | None = None,
     ) -> str:
         """Log one raw conversation turn for later distillation into typed
         memory via `improve`. Call this for every turn worth remembering,
         even before you know what parts of it are durable — distillation
-        figures that out later."""
-        get_mem().log_turn(session_id, role, content, task_id=task_id)
+        figures that out later. `scopes` lists other repos this turn
+        touched, beyond the session's own `task_id`."""
+        get_mem().log_turn(session_id, role, content, task_id=task_id, scopes=scopes)
         return "ok"
 
     @mcp.tool()

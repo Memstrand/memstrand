@@ -25,6 +25,7 @@ from pathlib import Path
 from .client import get_memory, normalize_atom, probe_daemon
 from .config import ensure_private_dir, get_settings, secure_file
 from .schema import Category, Provenance
+from .scopes import agent_name
 
 # RemoteError subclasses RuntimeError; KeyError covers Memory.update()'s "no
 # such atom"; OSError/FileNotFoundError cover bad paths for export/import/ingest.
@@ -49,6 +50,39 @@ def _mask(value: str | None) -> str:
     if not value:
         return "(none)"
     return (value[:3] + "…") if len(value) > 3 else "***"
+
+
+_REPO_HELP = "scope: repo key, short name (e.g. memstrand), or a path (resolved via git); repeatable"
+
+
+def _resolve_scope_args(mem, values: list[str] | None) -> list[str] | None:
+    """Turn `--repo` values into full scope keys: an existing path resolves
+    through git (`scopes.resolve_scope`); anything else is an exact key or a
+    short name matched against the store's known scopes (an ambiguous short
+    name is an error listing the candidates)."""
+    if not values:
+        return None
+    from .scopes import resolve_alias, resolve_scope
+
+    known: list[str] | None = None
+    out = []
+    for value in values:
+        if value.startswith(("/", ".", "~")) and Path(value).expanduser().exists():
+            out.append(resolve_scope(value, get_settings().home / "scope_cache.json"))
+            continue
+        if known is None:
+            known = list(mem.scopes_summary())
+        out.append(resolve_alias(value, known))
+    return out
+
+
+def _scope_label(item: dict) -> str:
+    from .scopes import short_name
+
+    scopes = item.get("scopes")
+    if scopes is None:
+        scopes = [item.get("task_id") or ""]
+    return ", ".join(short_name(s) for s in scopes)
 
 
 def _read_content_arg(content: str) -> str:
@@ -117,6 +151,10 @@ def _cmd_ui(args) -> int:
 def _cmd_remember(args) -> int:
     content = _read_content_arg(args.content)
     with _memory_session() as mem:
+        scopes = _resolve_scope_args(mem, args.repos)
+        if scopes is not None:
+            scopes += [args.task] if args.task else []
+            scopes += [""] if args.global_scope else []
         atom = mem.remember(
             content,
             category=Category(args.category),
@@ -126,6 +164,8 @@ def _cmd_remember(args) -> int:
             host=args.host,
             ttl_days=args.ttl_days,
             source=args.source,
+            scopes=scopes,
+            agent=agent_name("cli"),
         )
         print(normalize_atom(atom)["id"])
     return 0
@@ -141,6 +181,7 @@ def _cmd_recall(args) -> int:
             categories=categories,
             limit=args.limit,
             include_superseded=args.include_superseded,
+            scopes=_resolve_scope_args(mem, args.repos),
         )
         if args.json:
             print(json.dumps(hits, indent=2))
@@ -151,8 +192,7 @@ def _cmd_recall(args) -> int:
         for h in hits:
             flag = "  (superseded)" if h.get("superseded") else ""
             print(f"{h['score']:.3f}  [{h['category']}] {h['content']}{flag}")
-            scope = h.get("task_id") or "global"
-            bits = [f"id={h['id']}", f"scope={scope}"]
+            bits = [f"id={h['id']}", f"scope={_scope_label(h)}"]
             if h.get("source_ref"):
                 bits.append(f"source={h['source_ref']}")
             print(f"          {'  '.join(bits)}")
@@ -167,11 +207,14 @@ def _cmd_recall(args) -> int:
 def _cmd_list(args) -> int:
     with _memory_session() as mem:
         task_id = "" if args.global_only else args.task
+        if args.repo:
+            task_id = _resolve_scope_args(mem, [args.repo])[0]
         items = mem.list(
             category=Category(args.category) if args.category else None,
             task_id=task_id,
             limit=args.limit,
             offset=args.offset,
+            **({"agent": args.agent} if args.agent else {}),
         )
         if args.json:
             print(json.dumps(items, indent=2))
@@ -180,9 +223,8 @@ def _cmd_list(args) -> int:
             print("(no memories found)")
             return 0
         for a in items:
-            scope = a.get("task_id") or "global"
             flag = "  (superseded)" if a.get("superseded") else ""
-            print(f"{a['id']}  [{a['category']}] ({scope}) {a['content']}{flag}")
+            print(f"{a['id']}  [{a['category']}] ({_scope_label(a)}) {a['content']}{flag}")
     return 0
 
 
@@ -198,10 +240,15 @@ def _cmd_show(args) -> int:
         print(f"category:   {atom['category']}")
         print(f"provenance: {atom['provenance']}")
         print(f"confidence: {atom['confidence']}")
-        scope_line = atom.get("task_id") or "global"
+        scopes = atom.get("scopes") or [atom.get("task_id") or ""]
+        scope_line = ", ".join(s or "global" for s in scopes)
         if atom.get("host"):
             scope_line += f" / {atom['host']}"
         print(f"scope:      {scope_line}")
+        if atom.get("scope_status"):
+            print(f"scope set:  {atom['scope_status']}")
+        if atom.get("agent"):
+            print(f"agent:      {atom['agent']}")
         if atom.get("source"):
             source_line = atom["source"]
             if atom.get("source_ref"):
@@ -261,8 +308,13 @@ def _cmd_forget(args) -> int:
 
 def _cmd_forget_source(args) -> int:
     with _memory_session() as mem:
-        n = mem.forget_source(args.source)
-        print(f"forgot {n} memories from {args.source}")
+        if args.repo is None and args.task is None:
+            n = mem.forget_source(args.source)
+            print(f"forgot {n} memories from {args.source}")
+        else:
+            scope = _resolve_scope_args(mem, [args.repo])[0] if args.repo is not None else args.task
+            n = mem.forget_source(args.source, task_id=scope)
+            print(f"removed scope {scope or 'global'} from {n} memories from {args.source}")
     return 0
 
 
@@ -284,13 +336,19 @@ def _cmd_improve(args) -> int:
 
 def _cmd_answer(args) -> int:
     with _memory_session() as mem:
-        print(mem.grounded_answer(args.question, task_id=args.task))
+        print(
+            mem.grounded_answer(
+                args.question, task_id=args.task, scopes=_resolve_scope_args(mem, args.repos)
+            )
+        )
     return 0
 
 
 def _cmd_context(args) -> int:
     with _memory_session() as mem:
-        ctx = mem.context(args.query, task_id=args.task, limit=args.limit)
+        ctx = mem.context(
+            args.query, task_id=args.task, limit=args.limit, scopes=_resolve_scope_args(mem, args.repos)
+        )
         if ctx:
             print(ctx)
     return 0
@@ -421,6 +479,66 @@ def _cmd_restore(args) -> int:
 
 
 # -- stats / config ---------------------------------------------------------------------
+
+
+def _cmd_scope(args) -> int:
+    with _memory_session() as mem:
+        new_set = _resolve_scope_args(mem, args.set)
+        add = _resolve_scope_args(mem, args.add) or []
+        if args.global_scope:
+            add.append("")
+        remove = _resolve_scope_args(mem, args.remove)
+        if args.keep:
+            scopes = normalize_atom(mem.confirm_scopes(args.id))["scopes"]
+        elif new_set is None and not add and not remove:
+            atom = mem.get(args.id)
+            if atom is None:
+                raise _CliError(f"no such memory: {args.id}")
+            scopes = atom.get("scopes") or [atom.get("task_id") or ""]
+        else:
+            scopes = normalize_atom(mem.set_scopes(args.id, scopes=new_set, add=add, remove=remove))["scopes"]
+        for s in scopes:
+            print(s or "global")
+    return 0
+
+
+def _cmd_review(args) -> int:
+    from .scopes import short_name
+
+    with _memory_session() as mem:
+        reviews = mem.pending_scope_reviews(limit=args.limit)
+    if args.json:
+        print(json.dumps(reviews, indent=2))
+        return 0
+    if not reviews:
+        print("(nothing to review)")
+        return 0
+    for r in reviews:
+        scopes = ", ".join(short_name(s) for s in r["scopes"])
+        print(f"{r['id']}  [{r['category']}] {r['content']}")
+        print(f"    now: {scopes}  —  {r['reason']}")
+    print("\nresolve with: memstrand scope <id> --global | --set <repo> [...] | --keep")
+    return 0
+
+
+def _cmd_scopes(args) -> int:
+    from .scopes import short_name
+
+    with _memory_session() as mem:
+        if args.scopes_cmd == "rename":
+            print(f"renamed {mem.rename_scope(args.old, args.new)} memories")
+            return 0
+        summary = mem.scopes_summary()
+        if args.json:
+            print(json.dumps(summary, indent=2))
+            return 0
+        if not summary:
+            print("(no memories)")
+            return 0
+        width = max(len(short_name(k)) for k in summary)
+        for key, n in summary.items():
+            print(f"{short_name(key):<{width}}  {n:>5}  {key or '(global)'}")
+    return 0
 
 
 def _cmd_stats(args) -> int:
@@ -570,6 +688,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--provenance", default="explicit_statement", choices=[v.value for v in Provenance])
     p.add_argument("--confidence", type=float, default=0.8)
     p.add_argument("--task", default=None)
+    p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
+    p.add_argument("--global", dest="global_scope", action="store_true", help="also global (with --repo)")
     p.add_argument("--host", default=None)
     p.add_argument("--ttl-days", type=float, default=None)
     p.add_argument("--source", default=None)
@@ -578,6 +698,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recall", help="scoped hybrid recall")
     p.add_argument("query")
     p.add_argument("--task", default=None)
+    p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
     p.add_argument("--host", default=None)
     p.add_argument(
         "--category", dest="categories", action="append", default=None,
@@ -591,6 +712,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("list", help="list memories")
     p.add_argument("--category", default=None, choices=[c.value for c in Category])
     p.add_argument("--task", default=None)
+    p.add_argument("--repo", default=None, help="only memories in this scope (key, short name, or path)")
+    p.add_argument("--agent", default=None, help='only memories written by this agent, e.g. "claude-code@myhost"')
     p.add_argument("--global", dest="global_only", action="store_true", help="only global (task-less) memories")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--offset", type=int, default=0)
@@ -616,6 +739,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("forget-source", help="delete every memory ingested from a source")
     p.add_argument("source")
+    p.add_argument("--task", default=None, help="only remove this scope from the source's memories")
+    p.add_argument("--repo", default=None, help="like --task, but accepts a short name or path")
     p.set_defaults(func=_cmd_forget_source)
 
     p = sub.add_parser("log-turn", help="append one raw session turn")
@@ -633,11 +758,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("answer", help="answer a question using only stored memories")
     p.add_argument("question")
     p.add_argument("--task", default=None)
+    p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
     p.set_defaults(func=_cmd_answer)
 
     p = sub.add_parser("context", help="print the context block memstrand would inject into a prompt")
     p.add_argument("query", nargs="?", default=None)
     p.add_argument("--task", default=None)
+    p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
     p.add_argument("--limit", type=int, default=8)
     p.set_defaults(func=_cmd_context)
 
@@ -670,6 +797,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=_cmd_restore)
 
+    p = sub.add_parser("scope", help="show or change which repos/tasks a memory applies to")
+    p.add_argument("id")
+    p.add_argument("--set", action="append", default=None, help="replace the scope set (repeatable)")
+    p.add_argument("--add", action="append", default=None, help="add a scope (repeatable)")
+    p.add_argument("--remove", action="append", default=None, help="remove a scope (repeatable)")
+    p.add_argument("--global", dest="global_scope", action="store_true", help="make it global")
+    p.add_argument("--keep", action="store_true", help="confirm the current scopes as-is")
+    p.set_defaults(func=_cmd_scope)
+
+    p = sub.add_parser("review", help="memories waiting for you to decide their scope")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_review)
+
+    p = sub.add_parser("scopes", help="list known scopes, or rename one")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_scopes, scopes_cmd=None)
+    scopes_sub = p.add_subparsers(dest="scopes_cmd")
+    sp = scopes_sub.add_parser("rename", help="re-key every memory in OLD scope to NEW")
+    sp.add_argument("old")
+    sp.add_argument("new")
+    sp.set_defaults(func=_cmd_scopes)
+
     p = sub.add_parser("stats", help="show memory statistics")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=_cmd_stats)
@@ -681,12 +831,15 @@ def _build_parser() -> argparse.ArgumentParser:
     hook_sub = p.add_subparsers(dest="hook_cmd", required=True)
 
     hp = hook_sub.add_parser("claude-code", help="Stop/SessionEnd/PreCompact hook body")
-    hp.add_argument("--task-from", default="cwd", choices=["cwd", "none", "env"])
+    hp.add_argument(
+        "--task-from", default="auto", choices=["auto", "cwd", "none", "env"],
+        help="auto (default): cwd's repo + repos the session's tool calls touched; cwd: cwd's repo only",
+    )
     hp.add_argument("--no-improve", action="store_true")
     hp.set_defaults(func=_cmd_hook_claude_code)
 
     hp = hook_sub.add_parser("claude-code-context", help="UserPromptSubmit/SessionStart hook body")
-    hp.add_argument("--task-from", default="cwd", choices=["cwd", "none", "env"])
+    hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
     hp.add_argument("--limit", type=int, default=8)
     hp.set_defaults(func=_cmd_hook_claude_code_context)
 

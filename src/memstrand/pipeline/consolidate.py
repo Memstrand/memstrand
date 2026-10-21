@@ -118,7 +118,7 @@ def _link_near_duplicates(mem) -> int:
         if atom.id in mem.graph.superseded_ids([atom.id]):
             continue
         q = ScopedQuery(
-            text=atom.content, task_id=atom.task_id, host=atom.host,
+            text=atom.content, scopes=[sc for sc in atom.scopes if sc], host=atom.host,
             categories=[atom.category], limit=5,
         )
         for cand_id, cosine in mem.vectors.similar_to(atom.id, q, limit=5):
@@ -129,7 +129,7 @@ def _link_near_duplicates(mem) -> int:
             cand = mem.graph.get_atom(cand_id)
             if cand is None or cand.category != atom.category:
                 continue
-            if cand.task_id != atom.task_id or cand.host != atom.host:
+            if cand.scopes != atom.scopes or cand.host != atom.host:
                 continue  # exact-scope match only; the OR-global filter can leak globals in
             if cand_id in mem.graph.superseded_ids([cand_id]):
                 continue

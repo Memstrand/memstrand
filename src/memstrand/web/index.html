@@ -500,6 +500,10 @@
     span.style.background = CATEGORY_COLORS[cat] || "#6b7280";
     return span;
   }
+  function scopeLabel(item) {
+    const scopes = item.scopes || [item.task_id || ""];
+    return scopes.map((s) => s || "global").join(", ");
+  }
   function metaItem(label, value) {
     return el("span", { class: "meta-item" }, el("b", { text: label + ": " }), (value === null || value === undefined || value === "") ? "—" : String(value));
   }
@@ -535,7 +539,7 @@
     const meta = el("div", { class: "meta" });
     meta.appendChild(metaItem("provenance", item.provenance));
     meta.appendChild(metaItem("confidence", typeof item.confidence === "number" ? item.confidence.toFixed(2) : item.confidence));
-    meta.appendChild(metaItem("scope", item.task_id || "global"));
+    meta.appendChild(metaItem("scope", scopeLabel(item)));
     if (item.source) meta.appendChild(metaItem("source", item.source + (item.source_ref ? (" (" + item.source_ref + ")") : "")));
     if (item.superseded) meta.appendChild(el("span", { class: "meta-item", text: "superseded" }));
     card.appendChild(meta);
@@ -762,7 +766,9 @@
     const fields = el("div", { class: "meta", style: "flex-direction:column;gap:0.3rem;" });
     fields.appendChild(metaItem("provenance", atom.provenance));
     fields.appendChild(metaItem("confidence", typeof atom.confidence === "number" ? atom.confidence.toFixed(2) : atom.confidence));
-    fields.appendChild(metaItem("task_id", atom.task_id || "global"));
+    fields.appendChild(metaItem("scopes", scopeLabel(atom)));
+    fields.appendChild(metaItem("scope set", atom.scope_status));
+    fields.appendChild(metaItem("agent", atom.agent));
     fields.appendChild(metaItem("host", atom.host));
     fields.appendChild(metaItem("session_id", atom.session_id));
     if (atom.source) fields.appendChild(metaItem("source", atom.source + (atom.source_ref ? (" (" + atom.source_ref + ")") : "")));

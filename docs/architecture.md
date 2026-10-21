@@ -65,10 +65,13 @@ first process's stores or crashing on a raw Qdrant lock string.
 ## Write path
 
 `remember()` embeds the content once and writes the atom to the vector,
-graph, and keyword stores under one scope-aware content-hash id
-(`mem:<sha256(content + task_id + host)>`), then logs the write to the
-provenance ledger. Remembering identical content in the same scope twice is
-a no-op id, not a duplicate. `log_turn()` is just an append — no embedding,
+graph, and keyword stores under one content-hash id
+(`mem:<sha256(content + host)>`), then logs the write to the provenance
+ledger. An atom carries a *set* of scopes (repo keys, named tasks, and/or
+the global member — see [design/scoping-v2.md](design/scoping-v2.md)):
+remembering identical content again merges into the same atom, widening its
+scope set to the union, so a fact learned in a second repo becomes visible
+there without a duplicate. `log_turn()` is just an append — no embedding,
 no extraction — so a live chat session costs nothing until it's distilled.
 
 ## Distillation (`improve()`)

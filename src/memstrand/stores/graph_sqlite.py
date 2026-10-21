@@ -19,10 +19,21 @@ import threading
 from datetime import UTC, datetime
 
 from ..config import ensure_private_dir, secure_file
-from ..schema import Category, MemoryAtom, MemoryEdge, Provenance, RelationType
+from ..schema import (
+    Category,
+    MemoryAtom,
+    MemoryEdge,
+    Provenance,
+    RelationType,
+    decode_scopes,
+    encode_scopes,
+)
 from .base import sort_hop_results
 
 # Column order used for every atoms INSERT/SELECT — keep in sync with MemoryAtom.
+# `task_id` holds the ENCODED scope set (`schema.encode_scopes`, e.g. "||a|");
+# the column name is kept for on-disk compatibility, and legacy plain values
+# ("a" / "") still decode as a one-element set.
 ATOM_COLUMNS = (
     "id", "category", "content", "provenance", "confidence",
     "session_id", "task_id", "host", "agent",
@@ -52,7 +63,7 @@ def _row_to_atom(row: tuple) -> MemoryAtom:
         provenance=Provenance(prov),
         confidence=conf,
         session_id=sess or None,
-        task_id=task or None,
+        scopes=decode_scopes(task),
         host=host or None,
         agent=agent or None,
         created_at=created_at,
@@ -72,7 +83,7 @@ def _row_to_atom(row: tuple) -> MemoryAtom:
 def _atom_to_params(atom: MemoryAtom) -> tuple:
     return (
         atom.id, atom.category.value, atom.content, atom.provenance.value, atom.confidence,
-        atom.session_id or "", atom.task_id or "", atom.host or "", atom.agent or "",
+        atom.session_id or "", encode_scopes(atom.scopes), atom.host or "", atom.agent or "",
         _iso(atom.created_at), _iso(atom.updated_at), _iso(atom.expires_at), atom.access_count,
         atom.fsrs_difficulty, atom.fsrs_stability_days, _iso(atom.fsrs_next_review),
         atom.source or "", atom.source_ref or "", _iso(atom.last_accessed_at),
@@ -80,13 +91,16 @@ def _atom_to_params(atom: MemoryAtom) -> tuple:
 
 
 def _atom_filter_clause(
-    category: str | None, task_id: str | None, host: str | None
+    category: str | None, task_id: str | None, host: str | None, agent: str | None = None
 ) -> tuple[str, list]:
     """Shared WHERE-clause builder for list_atoms/count_atoms so the two
-    can never drift out of sync on filter semantics (fix #10)."""
+    can never drift out of sync on filter semantics (fix #10).
+
+    `task_id` filters by scope MEMBERSHIP ("" = atoms in the global scope),
+    matching both the encoded form and legacy plain values."""
     clauses: list[str] = []
     params: list = []
-    for col, value in (("category", category), ("task_id", task_id), ("host", host)):
+    for col, value in (("category", category), ("host", host), ("agent", agent)):
         if value is None:
             continue
         if value == "":
@@ -94,6 +108,12 @@ def _atom_filter_clause(
         else:
             clauses.append(f"{col} = ?")
             params.append(value)
+    if task_id is not None:
+        if task_id == "":
+            clauses.append("(task_id IS NULL OR task_id = '' OR instr(task_id, '||') > 0)")
+        else:
+            clauses.append("(task_id = ? OR instr(task_id, ?) > 0)")
+            params.extend([task_id, f"|{task_id}|"])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, params
 
@@ -197,9 +217,10 @@ class SqliteGraphStore:
         host: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        agent: str | None = None,
     ) -> list[MemoryAtom]:
         cols = ", ".join(ATOM_COLUMNS)
-        where, params = _atom_filter_clause(category, task_id, host)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
         params = [*params, limit, offset]
         with self._lock:
             rows = self.conn.execute(
@@ -213,8 +234,9 @@ class SqliteGraphStore:
         category: str | None = None,
         task_id: str | None = None,
         host: str | None = None,
+        agent: str | None = None,
     ) -> int:
-        where, params = _atom_filter_clause(category, task_id, host)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
         with self._lock:
             row = self.conn.execute(f"SELECT COUNT(*) FROM atoms {where}", params).fetchone()
         return int(row[0])
