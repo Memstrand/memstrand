@@ -1,0 +1,19 @@
+tests/test_import_hygiene.py
+  s_cc0c7560faa1c4::t_9d0303e92eaec6 170,181-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "b6538f592be908970f6590e7ee1c4092bf87f9a8",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
