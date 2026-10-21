@@ -1,0 +1,31 @@
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_9724f0d1e9f873 527,530-533,535-537
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_3e7af4017d2996 334-342,930-933
+src/memstrand/client.py
+  s_cc0c7560faa1c4::t_e3779b4d837090 353-354
+src/memstrand/pipeline/distill.py
+  s_cc0c7560faa1c4::t_6f387748969067 377-409,439,441
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_a596946986c150 75-81,251-259,266-267
+src/memstrand/server.py
+  s_cc0c7560faa1c4::t_b8f43a822c2a8b 616-619
+tests/test_extraction_failures.py
+  s_cc0c7560faa1c4::t_9fc1826515bbba 1-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "3eee6307d32929a8ce31f3e88f4345ab113e64b7",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
