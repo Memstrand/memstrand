@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0] — unreleased
 
+### Added (backfill)
+
+- `memstrand hook backfill`: distill existing Claude Code transcripts from
+  disk — chunked (one extraction call per `--chunk` turns), oldest first,
+  skips subagent transcripts and live sessions, resumable, and shares
+  progress with the live Stop hook. `--dry-run`, `--project`, `--since`,
+  `--limit`.
+- A synchronous `Memory.improve()` no longer holds the store-wide lock for
+  the whole distillation (minutes of LLM calls) — only the distillation
+  lock — so a shared daemon keeps serving recall and context requests.
+
 Scoping v2, phase 1 — see [docs/design/scoping-v2.md](docs/design/scoping-v2.md).
 
 ### Changed

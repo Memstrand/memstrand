@@ -656,6 +656,68 @@ def _cmd_hook_claude_code_context(args) -> int:
     return 0
 
 
+def _cmd_hook_backfill(args) -> int:
+    """Distill existing Claude Code transcripts from disk (see
+    `hooks.backfill_transcript`). Unlike the live hooks this is an
+    interactive command: it reports progress and real errors."""
+    from . import hooks
+    from .scopes import short_name
+
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since).replace(tzinfo=UTC)
+        except ValueError as exc:
+            raise _CliError(f"--since must be YYYY-MM-DD: {args.since!r}") from exc
+    roots = [Path(p) for p in args.paths] or [Path("~/.claude/projects").expanduser()]
+    transcripts = hooks.discover_transcripts(
+        roots, projects=args.project, since=since,
+        skip_active_minutes=args.skip_active_minutes, limit=args.limit,
+    )
+    if not transcripts:
+        print("(no transcripts matched)")
+        return 0
+
+    totals = {"sessions": 0, "turns": 0, "chars": 0, "atoms": 0, "scope_reviews": 0, "errors": 0}
+    mem = None if args.dry_run else get_memory(timeout=args.timeout)
+    try:
+        for i, path in enumerate(transcripts, start=1):
+            try:
+                r = hooks.backfill_transcript(
+                    mem, path, task_from=args.task_from, chunk=args.chunk,
+                    improve=not args.no_improve, dry_run=args.dry_run,
+                )
+            except _EXPECTED_ERRORS as exc:
+                print(f"[{i}/{len(transcripts)}] {path.name}: error: {exc}", file=sys.stderr)
+                totals["errors"] += 1
+                continue
+            totals["sessions"] += 1
+            for key in ("turns", "chars", "atoms", "scope_reviews"):
+                totals[key] += r[key]
+            totals["errors"] += len(r["errors"])
+            where = short_name(r.get("task_id") or "") if r.get("task_id") else Path(r["cwd"]).name
+            line = f"[{i}/{len(transcripts)}] {r['session'][:8]}  {where:<28} turns={r['turns']:<4}"
+            if args.dry_run:
+                line += f" ~{r['chars'] // 4} tokens"
+            else:
+                line += f" chunks={r['chunks']} atoms={r['atoms']} reviews={r['scope_reviews']}"
+                if r["errors"]:
+                    line += f" errors={len(r['errors'])} ({r['errors'][0].get('error', '')[:80]})"
+            print(line, flush=True)
+    finally:
+        if mem is not None:
+            mem.close()
+    summary = f"\n{totals['sessions']} sessions, {totals['turns']} turns"
+    if args.dry_run:
+        summary += f", ~{totals['chars'] // 4} tokens of text (dry run: nothing logged)"
+    else:
+        summary += f", {totals['atoms']} memories, {totals['scope_reviews']} scope questions queued"
+    if totals["errors"]:
+        summary += f", {totals['errors']} errors"
+    print(summary)
+    return 1 if totals["errors"] else 0
+
+
 def _cmd_hook_print_config(args) -> int:
     from .hooks import CLAUDE_CODE_SETTINGS_SNIPPET
 
@@ -842,6 +904,24 @@ def _build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
     hp.add_argument("--limit", type=int, default=8)
     hp.set_defaults(func=_cmd_hook_claude_code_context)
+
+    hp = hook_sub.add_parser(
+        "backfill", help="distill existing Claude Code transcripts from disk (resumable, chunked)"
+    )
+    hp.add_argument("paths", nargs="*", help="transcripts, project folders, or the projects folder "
+                    "(default: ~/.claude/projects)")
+    hp.add_argument("--project", action="append", default=None,
+                    help="only project folders containing this text (repeatable)")
+    hp.add_argument("--since", default=None, help="only transcripts modified on/after YYYY-MM-DD")
+    hp.add_argument("--limit", type=int, default=None, help="at most N sessions (oldest first)")
+    hp.add_argument("--chunk", type=int, default=40, help="turns per distillation call (default 40)")
+    hp.add_argument("--skip-active-minutes", type=float, default=10.0,
+                    help="skip transcripts modified this recently (live sessions); default 10")
+    hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
+    hp.add_argument("--no-improve", action="store_true", help="log turns only; distill later")
+    hp.add_argument("--dry-run", action="store_true", help="show what would be processed; write nothing")
+    hp.add_argument("--timeout", type=float, default=900.0, help="per-request timeout against the daemon (s)")
+    hp.set_defaults(func=_cmd_hook_backfill)
 
     hp = hook_sub.add_parser("print-config", help="print the Claude Code settings.json hooks snippet")
     hp.set_defaults(func=_cmd_hook_print_config)

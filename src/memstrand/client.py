@@ -452,7 +452,7 @@ def open_local_memory(settings: Settings | None = None) -> Memory:
         raise
 
 
-def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
+def get_memory(prefer_remote: bool = True, timeout: float = 30.0) -> RemoteMemory | Memory:
     """`RemoteMemory` if the daemon is up, a local `Memory()` if nothing
     answers, or `DaemonRejected` if something answers but refuses this
     client (see `probe_daemon`) — the caller gets the real reason instead
@@ -463,7 +463,9 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
     them will fail outright (Qdrant's on-disk lock) or silently race
     (SQLite WAL from two processes). The daemon, when running, is always
     the source of truth; local mode exists for one-shot CLI use with no
-    daemon around, and for tests.
+    daemon around, and for tests. `timeout` is the per-request timeout for
+    the remote client (long-running calls like a synchronous `improve`
+    need more than the default).
     """
     settings = get_settings()
     token = os.environ.get("MEMSTRAND_TOKEN")
@@ -472,7 +474,7 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
         resp = _probe_response(url, 0.5, token)
         if resp is not None:
             if resp.status_code == 200:
-                return RemoteMemory(settings.server_url, token=token)
+                return RemoteMemory(settings.server_url, token=token, timeout=timeout)
             raise DaemonRejected(
                 f"a memstrand daemon is running at {settings.server_url} but rejected "
                 f"this client (HTTP {resp.status_code}) — set MEMSTRAND_TOKEN to the "

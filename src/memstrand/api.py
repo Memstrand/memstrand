@@ -1262,12 +1262,20 @@ class Memory:
     def improve(self, session_ids: list[str] | None = None, background: bool = False) -> dict:
         """Distill raw sessions into typed permanent memory. `None` means
         every undistilled session. `background=True` runs on a daemon
-        thread and returns `{"queued": [...]}` immediately."""
+        thread and returns `{"queued": [...]}` immediately.
+
+        The synchronous path serializes on `_improve_lock` (one distillation
+        at a time, same as the background path) but NOT on `self._lock`:
+        distillation spends seconds-to-minutes in LLM calls, and holding the
+        store-wide lock for that long would block every other request on a
+        shared daemon (recall, the context hook, ...). Each store mutation
+        inside distillation takes `self._lock` itself."""
         from .pipeline import distill
 
-        with self._lock:
-            if background:
+        if background:
+            with self._lock:
                 return distill.improve_async(self, session_ids)
+        with self._improve_lock:
             return distill.distill_sessions(self, session_ids)
 
     def consolidate(self, now: datetime | None = None) -> dict:

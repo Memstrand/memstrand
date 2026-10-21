@@ -180,15 +180,22 @@ def _tool_use_paths(message: dict) -> list[str]:
 
 
 def _new_turns_with_paths(entries: list[dict]) -> list[tuple[str, str, list[str]]]:
-    """Text turns plus the paths each one touched. Tool calls usually live
-    in assistant entries with no text of their own, so their paths are
-    carried forward onto the next logged turn (and any left over at the end
-    go onto the last one). A user turn also contributes paths mentioned in
-    its own text ("read ~/projects/foo ...")."""
-    turns: list[tuple[str, str, list[str]]] = []
+    return [(role, text, paths) for role, text, paths, _ in _indexed_turns(entries)]
+
+
+def _indexed_turns(entries: list[dict], offset: int = 0) -> list[tuple[str, str, list[str], int]]:
+    """Text turns plus the paths each one touched, and the index (+`offset`)
+    of the transcript entry each turn came from — so a caller logging in
+    chunks can record exactly how far it got. Tool calls usually live in
+    assistant entries with no text of their own, so their paths are carried
+    forward onto the next logged turn (and any left over at the end go onto
+    the last one). A user turn also contributes paths mentioned in its own
+    text ("read ~/projects/foo ..."). Sidechain (subagent) entries are
+    skipped: their "user" turns are prompts Claude wrote, not the user."""
+    turns: list[tuple[str, str, list[str], int]] = []
     pending: list[str] = []
-    for entry in entries:
-        if entry.get("isMeta"):
+    for i, entry in enumerate(entries):
+        if entry.get("isMeta") or entry.get("isSidechain"):
             continue
         if entry.get("type") not in ("user", "assistant"):
             continue
@@ -202,10 +209,10 @@ def _new_turns_with_paths(entries: list[dict]) -> list[tuple[str, str, list[str]
         role = message.get("role") or entry["type"]
         paths = pending + (_TEXT_PATH_RE.findall(text) if role == "user" else [])
         pending = []
-        turns.append((role, text, paths))
+        turns.append((role, text, paths, offset + i))
     if pending and turns:
-        role, text, paths = turns[-1]
-        turns[-1] = (role, text, paths + pending)
+        role, text, paths, idx = turns[-1]
+        turns[-1] = (role, text, paths + pending, idx)
     return turns
 
 
@@ -280,55 +287,12 @@ def claude_code_hook(
         state = _load_state()
         sessions = state.setdefault("sessions", {})
         last_line = sessions.get(session_id, {}).get("last_line", 0)
-        new_entries = entries[last_line:]
-        raw_turns = _new_turns_with_paths(new_entries)
+        raw_turns = _indexed_turns(entries[last_line:], offset=last_line)
 
         task_id = _resolve_task_id(task_from, cwd)
         mem_session_id = f"claude-code:{session_id}"
-
-        turns: list[tuple[str, str, list[str]]] = []
-        if task_from == "auto" and raw_turns:
-            from .scopes import ScopeResolver
-
-            resolver = ScopeResolver(get_settings().home / "scope_cache.json")
-            for role, content, paths in raw_turns:
-                touched = [s for s in _scopes_for_paths(paths, cwd, resolver) if s != task_id]
-                turns.append((role, content, touched))
-            resolver.save()
-        else:
-            turns = [(role, content, []) for role, content, _ in raw_turns]
-
-        from .scopes import agent_name
-
-        agent = agent_name("claude-code")
-        if turns:
-            log_many = getattr(mem, "log_turns", None)
-            if callable(log_many):
-                log_many(
-                    [
-                        {
-                            "session_id": mem_session_id,
-                            "role": role,
-                            "content": content,
-                            "task_id": task_id,
-                            "agent": agent,
-                            **({"scopes": touched} if touched else {}),
-                        }
-                        for role, content, touched in turns
-                    ]
-                )
-            else:
-                # mems with the pre-v2 log_turn signature (no scopes/agent)
-                # keep working: only pass what the method accepts
-                takes_scopes = _accepts_kwarg(mem.log_turn, "scopes")
-                takes_agent = _accepts_kwarg(mem.log_turn, "agent")
-                for role, content, touched in turns:
-                    extra: dict = {}
-                    if touched and takes_scopes:
-                        extra["scopes"] = touched
-                    if takes_agent:
-                        extra["agent"] = agent
-                    mem.log_turn(mem_session_id, role, content, task_id=task_id, **extra)
+        turns = _attribute_turns(raw_turns, task_from, cwd, task_id)
+        _log_session_turns(mem, mem_session_id, task_id, turns)
 
         sessions[session_id] = {"transcript_path": str(transcript), "last_line": len(entries)}
         _save_state(state)
@@ -340,6 +304,170 @@ def claude_code_hook(
     except Exception as exc:  # noqa: BLE001 - a hook must never fail the user's session
         log_error(f"claude_code_hook: {exc}")
         return {"error": str(exc)}
+
+
+def _attribute_turns(
+    raw_turns: list[tuple[str, str, list[str], int]], task_from: str, cwd: str, task_id: str | None
+) -> list[tuple[str, str, list[str]]]:
+    """(role, content, touched scopes other than the session's own). Only
+    `auto` mode resolves paths; other modes record no touched scopes."""
+    if task_from != "auto" or not raw_turns:
+        return [(role, content, []) for role, content, _, _ in raw_turns]
+    from .scopes import ScopeResolver
+
+    resolver = ScopeResolver(get_settings().home / "scope_cache.json")
+    try:
+        return [
+            (role, content, [s for s in _scopes_for_paths(paths, cwd, resolver) if s != task_id])
+            for role, content, paths, _ in raw_turns
+        ]
+    finally:
+        resolver.save()
+
+
+def _log_session_turns(
+    mem, mem_session_id: str, task_id: str | None, turns: list[tuple[str, str, list[str]]]
+) -> None:
+    if not turns:
+        return
+    from .scopes import agent_name
+
+    agent = agent_name("claude-code")
+    log_many = getattr(mem, "log_turns", None)
+    if callable(log_many):
+        log_many(
+            [
+                {
+                    "session_id": mem_session_id,
+                    "role": role,
+                    "content": content,
+                    "task_id": task_id,
+                    "agent": agent,
+                    **({"scopes": touched} if touched else {}),
+                }
+                for role, content, touched in turns
+            ]
+        )
+        return
+    # mems with the pre-v2 log_turn signature (no scopes/agent) keep
+    # working: only pass what the method accepts
+    takes_scopes = _accepts_kwarg(mem.log_turn, "scopes")
+    takes_agent = _accepts_kwarg(mem.log_turn, "agent")
+    for role, content, touched in turns:
+        extra: dict = {}
+        if touched and takes_scopes:
+            extra["scopes"] = touched
+        if takes_agent:
+            extra["agent"] = agent
+        mem.log_turn(mem_session_id, role, content, task_id=task_id, **extra)
+
+
+# -- backfill: distill existing transcripts on disk ---------------------------------
+
+
+def discover_transcripts(
+    roots: list[Path],
+    projects: list[str] | None = None,
+    since: datetime | None = None,
+    skip_active_minutes: float = 10.0,
+    limit: int | None = None,
+    now: datetime | None = None,
+) -> list[Path]:
+    """Claude Code session transcripts under `roots`, oldest first. A root
+    may be a transcript file, a project folder (`<project>/<session>.jsonl`),
+    or the projects folder itself (`<projects>/<project>/<session>.jsonl`).
+    Subagent transcripts (`<project>/<session>/subagents/*.jsonl`) are never
+    included. `projects` filters by substring of the project folder name;
+    `since` by modification time. Transcripts modified in the last
+    `skip_active_minutes` are skipped — likely a live session, which its own
+    Stop hook will log."""
+    found: dict[str, Path] = {}
+    for root in roots:
+        root = Path(root).expanduser()
+        if root.is_file() and root.suffix == ".jsonl":
+            candidates = [root]
+        elif root.is_dir():
+            candidates = list(root.glob("*.jsonl")) + list(root.glob("*/*.jsonl"))
+        else:
+            continue
+        for path in candidates:
+            if path.parent.name == "subagents":
+                continue
+            found[str(path.resolve())] = path
+    now_ts = (now or datetime.now(UTC)).timestamp()
+    selected: list[tuple[float, Path]] = []
+    for path in found.values():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if projects and not any(p in path.parent.name for p in projects):
+            continue
+        if since is not None and mtime < since.timestamp():
+            continue
+        if skip_active_minutes > 0 and now_ts - mtime < skip_active_minutes * 60:
+            continue
+        selected.append((mtime, path))
+    selected.sort(key=lambda t: t[0])
+    paths = [p for _, p in selected]
+    return paths[:limit] if limit is not None else paths
+
+
+def _transcript_cwd(entries: list[dict]) -> str:
+    return next((e["cwd"] for e in entries if isinstance(e.get("cwd"), str) and e["cwd"]), ".")
+
+
+def backfill_transcript(
+    mem,
+    transcript: Path,
+    task_from: str = "auto",
+    chunk: int = 40,
+    improve: bool = True,
+    dry_run: bool = False,
+) -> dict:
+    """Log (and distill) the not-yet-logged turns of one transcript, `chunk`
+    turns at a time, distilling synchronously after each chunk so no single
+    extraction call gets a whole long session. Progress is saved to the same
+    state file the live hook uses after every chunk, so an interrupted
+    backfill resumes where it stopped and a later live Stop hook on a resumed
+    session never re-logs what the backfill already did."""
+    session_id = transcript.stem
+    entries = _read_transcript_entries(transcript)
+    cwd = _transcript_cwd(entries)
+    state = _load_state()
+    sessions = state.setdefault("sessions", {})
+    last_line = sessions.get(session_id, {}).get("last_line", 0)
+    raw_turns = _indexed_turns(entries[last_line:], offset=last_line)
+    report = {
+        "session": session_id, "cwd": cwd, "turns": len(raw_turns),
+        "chars": sum(len(t[1]) for t in raw_turns), "chunks": 0,
+        "atoms": 0, "scope_reviews": 0, "errors": [],
+    }
+    if dry_run:
+        return report
+    task_id = _resolve_task_id(task_from, cwd)
+    report["task_id"] = task_id
+    mem_session_id = f"claude-code:{session_id}"
+    size = max(1, chunk)
+    for start in range(0, len(raw_turns), size):
+        piece = raw_turns[start : start + size]
+        _log_session_turns(mem, mem_session_id, task_id, _attribute_turns(piece, task_from, cwd, task_id))
+        is_last = start + size >= len(raw_turns)
+        sessions[session_id] = {
+            "transcript_path": str(transcript),
+            "last_line": len(entries) if is_last else piece[-1][3] + 1,
+        }
+        _save_state(state)
+        report["chunks"] += 1
+        if improve:
+            result = mem.improve([mem_session_id], background=False) or {}
+            report["atoms"] += int(result.get("atoms", 0) or 0)
+            report["scope_reviews"] += int(result.get("scope_reviews", 0) or 0)
+            report["errors"].extend(result.get("errors") or [])
+    if not raw_turns:
+        sessions[session_id] = {"transcript_path": str(transcript), "last_line": len(entries)}
+        _save_state(state)
+    return report
 
 
 # -- UserPromptSubmit / SessionStart -----------------------------------------------

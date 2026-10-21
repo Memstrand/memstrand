@@ -178,6 +178,24 @@ see it with `memstrand show <id>` or filter with `memstrand list --agent`.
 A memory can belong to several repos at once — see `memstrand scope` in
 [docs/cli.md](cli.md#scopes).
 
+### Backfilling existing sessions
+
+The hooks only see sessions from the moment they're installed. To distill
+sessions already on disk:
+
+```bash
+memstrand hook backfill --dry-run              # what would be processed, ~tokens
+memstrand hook backfill --limit 3              # pilot: the 3 oldest sessions
+memstrand hook backfill --project my-repo      # one project's sessions
+memstrand hook backfill                        # everything under ~/.claude/projects
+```
+
+Sessions are fed to distillation in chunks (`--chunk`, default 40 turns)
+so a long session never becomes one huge extraction call. It's resumable
+and shares progress with the live Stop hook, so interrupting and
+re-running is safe. Distillation calls your LLM for every chunk — use
+`--dry-run` first to see how much text that is.
+
 If a daemon is running but rejects the hook's `MEMSTRAND_TOKEN` (missing
 or wrong), the hook fails fast with a "set MEMSTRAND_TOKEN" message rather
 than silently opening a second, unscoped local store — see

@@ -28,6 +28,7 @@
 | `stats` | atom/edge/session counts, by category and task |
 | `config` | effective configuration |
 | `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
+| `hook backfill [paths…]` | distill existing Claude Code transcripts from disk |
 
 Every data-touching command talks to a running daemon if one is up,
 otherwise opens a local store directly.
@@ -91,6 +92,14 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
   `cwd` scopes by the cwd's repo key (remote URL, else `local:` path);
   `auto` (default) also records per-turn touched repos for distillation
 - `hook claude-code-context`: `--task-from {auto,cwd,none,env}`, `--limit`
+- `hook backfill [paths…]`: paths are transcripts, project folders, or the
+  projects folder (default `~/.claude/projects`); `--project` (substring,
+  repeatable), `--since YYYY-MM-DD`, `--limit N` (oldest first), `--chunk`
+  (turns per distillation call, default 40), `--skip-active-minutes`
+  (default 10), `--task-from`, `--no-improve`, `--dry-run`, `--timeout`.
+  Subagent transcripts are skipped. Resumable: progress is shared with the
+  live Stop hook, so re-running continues where it stopped and never
+  re-logs turns.
 - `hook print-config`: prints the Claude Code `settings.json` hooks snippet
 
 ## REST / MCP reference
