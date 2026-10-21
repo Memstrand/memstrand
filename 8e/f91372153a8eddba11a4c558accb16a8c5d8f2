@@ -1,0 +1,49 @@
+src/memstrand/hooks.py
+  s_cc0c7560faa1c4::t_9acb0350badc92 461-467,475,482-487,499-500,510-513,521,526-528
+  s_cc0c7560faa1c4::t_4c859ba0e3ed28 315-316,349-359,361-365,369,384,386,394-395,401-402,529-530
+src/memstrand/pipeline/consolidate.py
+  s_cc0c7560faa1c4::t_bc4fa300b80495 80-81,83-90
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_bc4fa300b80495 494,496-497,503,527-537,1282-1298
+src/memstrand/pipeline/usage.py
+  s_cc0c7560faa1c4::t_f278ddd6a8c8e1 1-125
+src/memstrand/pipeline/distill.py
+  s_cc0c7560faa1c4::t_9dd63e06078f19 391-403
+  s_cc0c7560faa1c4::t_bc558392acc254 65,98-114,314-317,523-530
+src/memstrand/client.py
+  s_cc0c7560faa1c4::t_bc4fa300b80495 170,175
+  s_cc0c7560faa1c4::t_a1d626d51160e0 353-356
+src/memstrand/server.py
+  s_cc0c7560faa1c4::t_bc4fa300b80495 530-532,535
+  s_cc0c7560faa1c4::t_9476d62a603c61 613-619,1075
+CHANGELOG.md
+  s_cc0c7560faa1c4::t_60a4a718a4a0b3 16-25
+docs/cli.md
+  s_cc0c7560faa1c4::t_a1fb338591513b 31,106-108,112-118
+docs/configuration.md
+  s_cc0c7560faa1c4::t_89eee8be9767d0 41-42
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_8814dc2974b07f 715,717-721,723,726-728,735,745-751,755-757,759-763,773-774,777-778,782-789,793-826,1004-1009,1043-1044
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_4463ca8843b2e8 150-152,154-157
+tests/test_backfill.py
+  s_cc0c7560faa1c4::t_7904b0372c8d23 196
+tests/test_usage_and_batches.py
+  s_cc0c7560faa1c4::t_d2903ded200251 1-168
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "8ef91372153a8eddba11a4c558accb16a8c5d8f2",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
