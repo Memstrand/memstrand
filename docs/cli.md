@@ -28,6 +28,7 @@
 | `session <id>` | print a session's logged conversation (full id, Claude Code UUID, or unique prefix) |
 | `search-sessions <query>` | full-text search over logged session turns |
 | `stats` | atom/edge/session counts, by category and task |
+| `usage` | LLM tokens used by distillation/answers, by day, purpose, session, or model |
 | `config` | effective configuration |
 | `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
 | `hook backfill [paths…]` | distill existing Claude Code transcripts from disk |
@@ -102,11 +103,19 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 - `hook backfill [paths…]`: paths are transcripts, project folders, or the
   projects folder (default `~/.claude/projects`); `--project` (substring,
   repeatable), `--since YYYY-MM-DD`, `--limit N` (oldest first), `--chunk`
-  (turns per distillation call, default 40), `--skip-active-minutes`
+  (turns per distillation call, default 40), `--min-turns N` (smaller
+  sessions are logged and searchable but never distilled — no LLM cost),
+  `--skip-active-minutes`
   (default 10), `--task-from`, `--no-improve`, `--dry-run`, `--timeout`.
   Subagent transcripts are skipped. Resumable: progress is shared with the
   live Stop hook, so re-running continues where it stopped and never
-  re-logs turns.
+  re-logs turns; `--limit N` picks the next N sessions that still have
+  unprocessed turns, so repeated runs work through everything in batches.
+  Prints LLM tokens per session and per run.
+- `usage`: `--by {day,purpose,session,model}`, `--since YYYY-MM-DD`,
+  `--json`. Reads `{MEMSTRAND_HOME}/llm_usage.jsonl`, where every LLM call
+  records the token usage the endpoint reported, tagged by purpose
+  (`extract`, `trust`, `judge`, `answer`, `ping`) and session.
 - `hook print-config`: prints the Claude Code `settings.json` hooks snippet
 
 ## REST / MCP reference

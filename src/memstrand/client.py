@@ -167,11 +167,12 @@ class RemoteMemory:
         task_id: str | None = None,
         scopes: list[str] | None = None,
         agent: str | None = None,
+        ts: float | None = None,
     ) -> None:
         payload = _drop_none(
             {
                 "session_id": session_id, "role": role, "content": content,
-                "task_id": task_id, "scopes": scopes, "agent": agent,
+                "task_id": task_id, "scopes": scopes, "agent": agent, "ts": ts,
             }
         )
         self._request("POST", "/api/turns", json=payload)
@@ -348,6 +349,10 @@ class RemoteMemory:
         if result is None:
             raise KeyError(f"no such session: {ref}")
         return result
+
+    def mark_distilled(self, session_id: str) -> int:
+        result = self._request("POST", f"/api/sessions/{session_id}/distilled")
+        return int(result.get("last_turn_id", 0)) if result else 0
 
     def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
         params = _drop_none({"q": query, "limit": limit, "session": session})

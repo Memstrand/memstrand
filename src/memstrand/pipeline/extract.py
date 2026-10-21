@@ -147,9 +147,14 @@ def chat_completion(
             f"local LLM request failed ({type(e).__name__}): {e}", transient=True
         ) from e
     try:
-        return resp.json()["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError) as e:
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, ValueError, TypeError) as e:
         raise LLMUnavailable(f"malformed LLM response from {base_url}: {e}") from e
+    from . import usage
+
+    usage.record(model, data.get("usage") if isinstance(data, dict) else None)
+    return content
 
 
 def _extract_json_array(text: str) -> list:

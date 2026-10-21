@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skips subagent transcripts and live sessions, resumable, and shares
   progress with the live Stop hook. `--dry-run`, `--project`, `--since`,
   `--limit`.
+- **Token accounting.** Every LLM call records the usage the endpoint
+  reports to `{MEMSTRAND_HOME}/llm_usage.jsonl`, tagged by purpose
+  (extract / trust / judge / answer / ping) and session; `memstrand usage`
+  summarizes it, distillation reports include `usage`, and backfill prints
+  tokens per session and per run.
+- Backfill batches: `--limit N` takes the next N sessions with unprocessed
+  turns; `--min-turns` logs small sessions without distilling them (and
+  marks them distilled so consolidation doesn't spend tokens on them
+  later — REST `POST /api/sessions/{id}/distilled`). Turns keep their
+  original transcript timestamps (`log_turn(ts=...)`, REST `ts`).
 - `memstrand session <id>` and `memstrand search-sessions <query>` (REST
   `GET /api/sessions/{id}/turns`, `GET /api/turns/search`): read back and
   full-text search the raw logged conversation behind memories;

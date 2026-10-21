@@ -527,9 +527,12 @@ async def _turns(request: Request) -> Response:
                 raise ValueError("each turn requires session_id, role, content")
             if role not in _VALID_ROLES:
                 raise ValueError(f"invalid role {role!r}; must be one of {list(_VALID_ROLES)}")
+            ts = t.get("ts")
+            if ts is not None and (isinstance(ts, bool) or not isinstance(ts, (int, float))):
+                raise ValueError("ts must be a number (epoch seconds)")
             mem.log_turn(
                 session_id, role, content, task_id=t.get("task_id"),
-                scopes=_parse_scopes(t.get("scopes")), agent=t.get("agent"),
+                scopes=_parse_scopes(t.get("scopes")), agent=t.get("agent"), ts=ts,
             )
 
     await run_in_threadpool(_run)
@@ -605,6 +608,13 @@ async def _session_turns(request: Request) -> Response:
     limit = _parse_bounded_int(limit_raw, name="limit", default=0, minimum=0) if limit_raw else None
     result = await run_in_threadpool(mem.session_turns, request.path_params["session_id"], limit)
     return JSONResponse(result)
+
+
+@_json_errors
+async def _session_mark_distilled(request: Request) -> Response:
+    mem: Memory = request.app.state.mem
+    last = await run_in_threadpool(mem.mark_distilled, request.path_params["session_id"])
+    return JSONResponse({"last_turn_id": last})
 
 
 @_json_errors
@@ -1062,6 +1072,7 @@ def create_app(
         Route("/api/turns", _turns, methods=["POST"]),
         Route("/api/turns/search", _turns_search, methods=["GET"]),
         Route("/api/sessions/{session_id:path}/turns", _session_turns, methods=["GET"]),
+        Route("/api/sessions/{session_id:path}/distilled", _session_mark_distilled, methods=["POST"]),
         Route("/api/improve", _improve, methods=["POST"]),
         Route("/api/answer", _answer, methods=["POST"]),
         Route("/api/context", _context, methods=["POST"]),

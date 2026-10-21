@@ -193,7 +193,7 @@ def test_cli_backfill_dry_run_and_real(tmp_path, capsys, monkeypatch):
 
     assert cli.main(["hook", "backfill", str(root), "--task-from", "none"]) == 0
     out = capsys.readouterr().out
-    assert "chunks=1 atoms=1" in out and "1 memories" in out
+    assert "atoms=1 reviews=0" in out and "1 memories" in out
     assert len(mem.turns) == 2
 
     assert cli.main(["hook", "backfill", str(root), "--since", "nope"]) == 1

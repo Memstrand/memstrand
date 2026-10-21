@@ -38,6 +38,8 @@ Everything lives under `MEMSTRAND_HOME` (default `~/.memstrand`):
   at a real server).
 - `kuzu/` — only used when `MEMSTRAND_GRAPH_BACKEND=kuzu`.
 - `backups/` — timestamped `memstrand backup` output.
+- `llm_usage.jsonl` — one line per LLM call: reported prompt/completion
+  tokens, model, purpose, session (`memstrand usage` summarizes it).
 - `scope_cache.json` — repo root → scope key cache for the hooks and
   `--repo <path>` (invalidated when the repo's git config changes).
 - `backups/pre-scoping-v2-*.jsonl` — the automatic backup written before

@@ -312,7 +312,8 @@ def claude_code_hook(
         task_id = _resolve_task_id(task_from, cwd)
         mem_session_id = f"claude-code:{session_id}"
         turns = _attribute_turns(raw_turns, task_from, cwd, task_id)
-        _log_session_turns(mem, mem_session_id, task_id, turns)
+        stamps = [_entry_ts(entries[idx]) for *_, idx in raw_turns]
+        _log_session_turns(mem, mem_session_id, task_id, turns, stamps)
 
         sessions[session_id] = {"transcript_path": str(transcript), "last_line": len(entries)}
         _save_state(state)
@@ -345,11 +346,27 @@ def _attribute_turns(
         resolver.save()
 
 
+def _entry_ts(entry: dict) -> float | None:
+    """A transcript entry's original time (ISO 8601 `timestamp`), as epoch seconds."""
+    raw = entry.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
 def _log_session_turns(
-    mem, mem_session_id: str, task_id: str | None, turns: list[tuple[str, str, list[str]]]
+    mem,
+    mem_session_id: str,
+    task_id: str | None,
+    turns: list[tuple[str, str, list[str]]],
+    stamps: list[float | None] | None = None,
 ) -> None:
     if not turns:
         return
+    stamps = stamps if stamps is not None else [None] * len(turns)
     from .scopes import agent_name
 
     agent = agent_name("claude-code")
@@ -364,8 +381,9 @@ def _log_session_turns(
                     "task_id": task_id,
                     "agent": agent,
                     **({"scopes": touched} if touched else {}),
+                    **({"ts": ts} if ts is not None else {}),
                 }
-                for role, content, touched in turns
+                for (role, content, touched), ts in zip(turns, stamps, strict=True)
             ]
         )
         return
@@ -373,12 +391,15 @@ def _log_session_turns(
     # working: only pass what the method accepts
     takes_scopes = _accepts_kwarg(mem.log_turn, "scopes")
     takes_agent = _accepts_kwarg(mem.log_turn, "agent")
-    for role, content, touched in turns:
+    takes_ts = _accepts_kwarg(mem.log_turn, "ts")
+    for (role, content, touched), ts in zip(turns, stamps, strict=True):
         extra: dict = {}
         if touched and takes_scopes:
             extra["scopes"] = touched
         if takes_agent:
             extra["agent"] = agent
+        if takes_ts and ts is not None:
+            extra["ts"] = ts
         mem.log_turn(mem_session_id, role, content, task_id=task_id, **extra)
 
 
@@ -437,6 +458,13 @@ def _transcript_cwd(entries: list[dict]) -> str:
     return next((e["cwd"] for e in entries if isinstance(e.get("cwd"), str) and e["cwd"]), ".")
 
 
+def pending_turn_count(transcript: Path) -> int:
+    """Text turns in `transcript` not yet logged (per the hook state file)."""
+    entries = _read_transcript_entries(transcript)
+    last_line = _load_state().get("sessions", {}).get(transcript.stem, {}).get("last_line", 0)
+    return len(_indexed_turns(entries[last_line:], offset=last_line))
+
+
 def backfill_transcript(
     mem,
     transcript: Path,
@@ -444,13 +472,19 @@ def backfill_transcript(
     chunk: int = 40,
     improve: bool = True,
     dry_run: bool = False,
+    min_turns: int = 0,
 ) -> dict:
     """Log (and distill) the not-yet-logged turns of one transcript, `chunk`
     turns at a time, distilling synchronously after each chunk so no single
     extraction call gets a whole long session. Progress is saved to the same
     state file the live hook uses after every chunk, so an interrupted
     backfill resumes where it stopped and a later live Stop hook on a resumed
-    session never re-logs what the backfill already did."""
+    session never re-logs what the backfill already did.
+
+    Sessions with fewer than `min_turns` pending turns are logged (so they
+    stay searchable) but not distilled — no LLM calls for sessions too
+    small to be worth a full extraction prompt. `report["usage"]` totals
+    the LLM tokens distillation reported for this transcript."""
     session_id = transcript.stem
     entries = _read_transcript_entries(transcript)
     cwd = _transcript_cwd(entries)
@@ -462,6 +496,8 @@ def backfill_transcript(
         "session": session_id, "cwd": cwd, "turns": len(raw_turns),
         "chars": sum(len(t[1]) for t in raw_turns), "chunks": 0,
         "atoms": 0, "scope_reviews": 0, "errors": [],
+        "distilled": improve and len(raw_turns) >= min_turns,
+        "usage": {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0},
     }
     if dry_run:
         return report
@@ -471,7 +507,10 @@ def backfill_transcript(
     size = max(1, chunk)
     for start in range(0, len(raw_turns), size):
         piece = raw_turns[start : start + size]
-        _log_session_turns(mem, mem_session_id, task_id, _attribute_turns(piece, task_from, cwd, task_id))
+        _log_session_turns(
+            mem, mem_session_id, task_id, _attribute_turns(piece, task_from, cwd, task_id),
+            [_entry_ts(entries[idx]) for *_, idx in piece],
+        )
         is_last = start + size >= len(raw_turns)
         sessions[session_id] = {
             "transcript_path": str(transcript),
@@ -479,11 +518,16 @@ def backfill_transcript(
         }
         _save_state(state)
         report["chunks"] += 1
-        if improve:
+        if report["distilled"]:
             result = mem.improve([mem_session_id], background=False) or {}
             report["atoms"] += int(result.get("atoms", 0) or 0)
             report["scope_reviews"] += int(result.get("scope_reviews", 0) or 0)
             report["errors"].extend(result.get("errors") or [])
+            for key, value in (result.get("usage") or {}).items():
+                if key in report["usage"]:
+                    report["usage"][key] += int(value or 0)
+    if raw_turns and improve and not report["distilled"]:
+        mem.mark_distilled(mem_session_id)  # too small: searchable, but never distilled later
     if not raw_turns:
         sessions[session_id] = {"transcript_path": str(transcript), "last_line": len(entries)}
         _save_state(state)

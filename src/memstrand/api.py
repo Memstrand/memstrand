@@ -491,14 +491,16 @@ class Memory:
         task_id: str | None = None,
         scopes: list[str] | None = None,
         agent: str | None = None,
+        ts: float | None = None,
     ) -> None:
-        """Append one raw turn. `task_id` is the session's own (primary)
+        """Append one raw turn. `ts` (epoch seconds) overrides the recorded
+        time, e.g. a backfilled turn's original time. `task_id` is the session's own (primary)
         scope; `scopes` lists other scopes this turn touched (repos read or
         edited via tool calls) — distillation offers them as candidates.
         `agent` (e.g. "claude-code@host") is inherited by distilled atoms."""
         with self._lock:
             self.sessions.append_turn(
-                session_id, role, content, task_id=task_id, scopes=scopes, agent=agent
+                session_id, role, content, task_id=task_id, scopes=scopes, agent=agent, ts=ts
             )
 
     # -- raw session access (owner-facing; NOT scope-filtered) ----------------------
@@ -521,6 +523,17 @@ class Memory:
             if limit is not None:
                 turns = turns[:limit]
             return {"session_id": matches[0], "turns": turns}
+
+    def mark_distilled(self, session_id: str) -> int:
+        """Mark every turn logged so far in `session_id` as distilled without
+        running the LLM (e.g. a backfilled session too small to be worth
+        it), so consolidation won't distill it later. Returns the watermark."""
+        with self._lock:
+            turns = self.sessions.get_session(session_id)
+            last = max((t["id"] for t in turns), default=0)
+            if last:
+                self.sessions.mark_distilled(session_id, last)
+            return last
 
     def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
         """Full-text search over raw logged turns (owner-facing, not
@@ -1266,20 +1279,23 @@ class Memory:
             if not context_lines:
                 return "I don't know — nothing in memory covers this."
             try:
-                return chat_completion(
-                    self.llm_base_url,
-                    self.llm_model,
-                    [
-                        {
-                            "role": "system",
-                            "content": "Answer ONLY from the memories below. "
-                            "If they don't cover the question, say so.",
-                        },
-                        {"role": "user", "content": f"Memories:\n{context_lines}\n\nQ: {question}"},
-                    ],
-                    timeout=120.0,
-                    api_key=self.llm_api_key,
-                )
+                from .pipeline.usage import purpose
+
+                with purpose("answer"):
+                    return chat_completion(
+                        self.llm_base_url,
+                        self.llm_model,
+                        [
+                            {
+                                "role": "system",
+                                "content": "Answer ONLY from the memories below. "
+                                "If they don't cover the question, say so.",
+                            },
+                            {"role": "user", "content": f"Memories:\n{context_lines}\n\nQ: {question}"},
+                        ],
+                        timeout=120.0,
+                        api_key=self.llm_api_key,
+                    )
             except LLMUnavailable as e:
                 # Surface the real reason (down vs. rejected the request)
                 # instead of a generic "unavailable" that hides a 4xx like

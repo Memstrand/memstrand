@@ -712,21 +712,27 @@ def _cmd_hook_backfill(args) -> int:
             raise _CliError(f"--since must be YYYY-MM-DD: {args.since!r}") from exc
     roots = [Path(p) for p in args.paths] or [Path("~/.claude/projects").expanduser()]
     transcripts = hooks.discover_transcripts(
-        roots, projects=args.project, since=since,
-        skip_active_minutes=args.skip_active_minutes, limit=args.limit,
+        roots, projects=args.project, since=since, skip_active_minutes=args.skip_active_minutes,
     )
+    # only sessions with turns not yet logged, so `--limit 50` twice means
+    # the next 50 sessions, not the same 50 again
+    transcripts = [p for p in transcripts if hooks.pending_turn_count(p) > 0]
+    if args.limit is not None:
+        transcripts = transcripts[: args.limit]
     if not transcripts:
-        print("(no transcripts matched)")
+        print("(no transcripts with unprocessed turns matched)")
         return 0
 
-    totals = {"sessions": 0, "turns": 0, "chars": 0, "atoms": 0, "scope_reviews": 0, "errors": 0}
+    totals = {"sessions": 0, "turns": 0, "chars": 0, "atoms": 0, "scope_reviews": 0, "errors": 0,
+              "skipped_small": 0, "distilled_chars": 0, "calls": 0, "prompt_tokens": 0,
+              "completion_tokens": 0}
     mem = None if args.dry_run else get_memory(timeout=args.timeout)
     try:
         for i, path in enumerate(transcripts, start=1):
             try:
                 r = hooks.backfill_transcript(
                     mem, path, task_from=args.task_from, chunk=args.chunk,
-                    improve=not args.no_improve, dry_run=args.dry_run,
+                    improve=not args.no_improve, dry_run=args.dry_run, min_turns=args.min_turns,
                 )
             except _EXPECTED_ERRORS as exc:
                 print(f"[{i}/{len(transcripts)}] {path.name}: error: {exc}", file=sys.stderr)
@@ -736,12 +742,25 @@ def _cmd_hook_backfill(args) -> int:
             for key in ("turns", "chars", "atoms", "scope_reviews"):
                 totals[key] += r[key]
             totals["errors"] += len(r["errors"])
+            small = r["turns"] < args.min_turns
+            if r["distilled"]:
+                totals["distilled_chars"] += r["chars"]
+                for key in ("calls", "prompt_tokens", "completion_tokens"):
+                    totals[key] += r["usage"][key]
+            elif small:
+                totals["skipped_small"] += 1
             where = short_name(r.get("task_id") or "") if r.get("task_id") else Path(r["cwd"]).name
             line = f"[{i}/{len(transcripts)}] {r['session'][:8]}  {where:<28} turns={r['turns']:<4}"
             if args.dry_run:
-                line += f" ~{r['chars'] // 4} tokens"
+                line += f" ~{r['chars'] // 4} text tokens" + ("  (below --min-turns: log only)" if small else "")
+            elif not r["distilled"]:
+                line += " logged only" + (" (below --min-turns)" if small else "")
             else:
-                line += f" chunks={r['chunks']} atoms={r['atoms']} reviews={r['scope_reviews']}"
+                u = r["usage"]
+                line += (
+                    f" atoms={r['atoms']} reviews={r['scope_reviews']}"
+                    f"  llm: {u['calls']} calls, {u['prompt_tokens']:,} in / {u['completion_tokens']:,} out"
+                )
                 if r["errors"]:
                     line += f" errors={len(r['errors'])} ({r['errors'][0].get('error', '')[:80]})"
             print(line, flush=True)
@@ -751,12 +770,58 @@ def _cmd_hook_backfill(args) -> int:
     summary = f"\n{totals['sessions']} sessions, {totals['turns']} turns"
     if args.dry_run:
         summary += f", ~{totals['chars'] // 4} tokens of text (dry run: nothing logged)"
+        if totals["skipped_small"]:
+            summary += f"; {totals['skipped_small']} below --min-turns (log only, no LLM)"
     else:
         summary += f", {totals['atoms']} memories, {totals['scope_reviews']} scope questions queued"
+        if totals["skipped_small"]:
+            summary += f", {totals['skipped_small']} small sessions logged without distilling"
     if totals["errors"]:
         summary += f", {totals['errors']} errors"
     print(summary)
+    if not args.dry_run and totals["calls"]:
+        total_tokens = totals["prompt_tokens"] + totals["completion_tokens"]
+        text_tokens = max(1, totals["distilled_chars"] // 4)
+        print(
+            f"LLM usage: {totals['calls']} calls, {totals['prompt_tokens']:,} input + "
+            f"{totals['completion_tokens']:,} output = {total_tokens:,} tokens "
+            f"(~{total_tokens / text_tokens:.1f}x the {text_tokens:,} tokens of conversation text distilled)"
+        )
     return 1 if totals["errors"] else 0
+
+
+def _cmd_usage(args) -> int:
+    """Summarize the local LLM token ledger ({home}/llm_usage.jsonl)."""
+    from .pipeline import usage
+
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since).replace(tzinfo=UTC).timestamp()
+        except ValueError as exc:
+            raise _CliError(f"--since must be YYYY-MM-DD: {args.since!r}") from exc
+    rows = usage.read_ledger(since=since)
+    groups = usage.summarize(rows, by=args.by)
+    if args.json:
+        print(json.dumps(groups, indent=2))
+        return 0
+    if not rows:
+        print("(no LLM calls recorded)")
+        return 0
+    width = max(len(k) for k in groups)
+    print(f"{args.by:<{width}}  {'calls':>6}  {'input':>12}  {'output':>10}  {'total':>12}")
+    for key, g in sorted(groups.items()):
+        total = g["prompt_tokens"] + g["completion_tokens"]
+        print(f"{key:<{width}}  {g['calls']:>6}  {g['prompt_tokens']:>12,}  {g['completion_tokens']:>10,}  {total:>12,}")
+    t = usage.summarize(rows, by="model")
+    calls = sum(g["calls"] for g in t.values())
+    p = sum(g["prompt_tokens"] for g in t.values())
+    c = sum(g["completion_tokens"] for g in t.values())
+    print(f"{'TOTAL':<{width}}  {calls:>6}  {p:>12,}  {c:>10,}  {p + c:>12,}")
+    unreported = sum(1 for r in rows if not r.get("reported", True))
+    if unreported:
+        print(f"note: {unreported} calls had no usage reported by the endpoint (counted as 0)")
+    return 0
 
 
 def _cmd_hook_print_config(args) -> int:
@@ -936,6 +1001,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("new")
     sp.set_defaults(func=_cmd_scopes)
 
+    p = sub.add_parser("usage", help="LLM token usage recorded by distillation and answers")
+    p.add_argument("--by", default="day", choices=["day", "purpose", "session", "model"])
+    p.add_argument("--since", default=None, help="only calls on/after YYYY-MM-DD")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_usage)
+
     p = sub.add_parser("stats", help="show memory statistics")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=_cmd_stats)
@@ -969,6 +1040,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--since", default=None, help="only transcripts modified on/after YYYY-MM-DD")
     hp.add_argument("--limit", type=int, default=None, help="at most N sessions (oldest first)")
     hp.add_argument("--chunk", type=int, default=40, help="turns per distillation call (default 40)")
+    hp.add_argument("--min-turns", type=int, default=0,
+                    help="sessions with fewer pending turns are logged but not distilled (no LLM cost)")
     hp.add_argument("--skip-active-minutes", type=float, default=10.0,
                     help="skip transcripts modified this recently (live sessions); default 10")
     hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
