@@ -1,0 +1,113 @@
+src/memstrand/web/index.html
+  s_cc0c7560faa1c4::t_4641fb1fee60e6 503-506,542,769
+  s_cc0c7560faa1c4::t_ead029053eee62 770-771
+src/memstrand/export.py
+  s_cc0c7560faa1c4::t_71d5081bc71f46 212
+  s_cc0c7560faa1c4::t_5fca73602e0fc4 14,16,82,98-104,106,138,148,158-161,211,243-244,246-252
+src/memstrand/hooks.py
+  s_cc0c7560faa1c4::t_71d5081bc71f46 146,165,301-303,314-315,317,321-331,353-357,362-373,379-399
+  s_cc0c7560faa1c4::t_0d63456a9199bf 34-35,97-98,132-145,147-164,166-189,198,203-208,212-216,218-234,236-237,241-244,249-250,252,284,289-300,400-457
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_e141dcb0d1fd35 96-105,1173,1177,1180-1181,1186
+  s_cc0c7560faa1c4::t_bceb12b2ea569b 250-310,357-370,374,377-382,384,417,419-430,432,435-454
+  s_cc0c7560faa1c4::t_afcbe530047816 522-534,538-541,543-556,558-730,800,828,832-834,854,937,962,996,1010,1014,1020,1032-1033,1043,1048,1062,1071,1073,1089-1091,1111,1113,1127,1147,1160
+  s_cc0c7560faa1c4::t_26c959ac0dacc7 20-22
+  s_cc0c7560faa1c4::t_3475bf1bdfb32e 19,23-25,29,31,38-39,90-95,106,213-249,462,487-493,495-498,500-502
+src/memstrand/scopes.py
+  s_cc0c7560faa1c4::t_5c7f30fb464e2c 210-213
+  s_cc0c7560faa1c4::t_4cf0a5a1c5cae9 1-209,214-221
+src/memstrand/client.py
+  s_cc0c7560faa1c4::t_71d5081bc71f46 156-157,163-169,172-174,266,274
+  s_cc0c7560faa1c4::t_38af773da7df8d 192-195
+  s_cc0c7560faa1c4::t_1eac1825ca827c 60-63,142,175,180,188-191,222,235,247,252-254,297,300-303,308-315,318-319,323-352
+tests/test_scoping_attribution.py
+  s_cc0c7560faa1c4::t_154f2f08c8fc4f 1-265
+src/memstrand/mcp_server.py
+  s_cc0c7560faa1c4::t_71d5081bc71f46 120
+  s_cc0c7560faa1c4::t_e34e455791f73e 29,101,106-108,119,122-125,136,151,162,171-173,177,181,185-206,248,253-255
+tests/test_scoping_v2.py
+  s_cc0c7560faa1c4::t_6d7a7ac82eec6c 1-505,520,548,552,563-564,566,634,639,644,652,657-660,683
+  s_cc0c7560faa1c4::t_ebf376362c0ae6 506-519,521-547,549-551,553-562,565,567-633,635-638,640-643,645-651,653-656,661-682,684-694
+src/memstrand/stores/graph_kuzu.py
+  s_cc0c7560faa1c4::t_58388c643c8d4c 18-26,31-32,35-38,41,49-56,92,185
+  s_cc0c7560faa1c4::t_011a91d52a2f4a 271,273,293,295
+src/memstrand/stores/base.py
+  s_cc0c7560faa1c4::t_26519af5e871e1 150-156
+  s_cc0c7560faa1c4::t_d2ee51c67de568 59-60,66,89-91,104,135-137,144,157-158
+src/memstrand/pipeline/consolidate.py
+  s_cc0c7560faa1c4::t_38e3f61119f9e3 121
+  s_cc0c7560faa1c4::t_04f3f16f7d3953 132
+src/memstrand/schema.py
+  s_cc0c7560faa1c4::t_344a40b6e64f91 16-79
+  s_cc0c7560faa1c4::t_2aaa0a70364cef 147
+  s_cc0c7560faa1c4::t_df957fbb4ffdbc 175-193
+  s_cc0c7560faa1c4::t_4db9fc36b673e9 218-219,223-237
+  s_cc0c7560faa1c4::t_6e7d5f17fa1f8f 11,194
+src/memstrand/stores/sqlite.py
+  s_cc0c7560faa1c4::t_5c7f30fb464e2c 213-224
+  s_cc0c7560faa1c4::t_26519af5e871e1 16,23,58-66,81-90,126,130,225-226,228-297,302,304,307-308,312-313
+  s_cc0c7560faa1c4::t_83784ced4da384 102,104,107-114,121,127-129,131,209-212,227,298-301,303,305-306,309-311,314
+docs/design/scoping-v2.md
+  s_cc0c7560faa1c4::t_c624c2f8da71df 1-410
+  s_cc0c7560faa1c4::t_0432fa74beb6da 411-431
+src/memstrand/stores/keyword_sqlite.py
+  s_cc0c7560faa1c4::t_6161a4cbfc635a 20,37-48,106
+src/memstrand/stores/vector_qdrant.py
+  s_cc0c7560faa1c4::t_62e3db1620b06a 4-10,210,222,224-230,282,305-316
+  s_cc0c7560faa1c4::t_9fbd24b6295510 317
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_38af773da7df8d 311-317,498,742-743
+  s_cc0c7560faa1c4::t_71d5081bc71f46 28,55-87,154-157,167-168,184,195,210-211,217,227,243-244,248-251,716
+  s_cc0c7560faa1c4::t_00a197de0bfab4 339-343,349-351,484-497,499-543,691-692,701,715,761,767,800-822,834-837,842
+src/memstrand/pipeline/distill.py
+  s_cc0c7560faa1c4::t_38e3f61119f9e3 6-8,12-20,24,64,128-130,133-209,370,377,383-385,388-399,419-427,431,457-458,461-462,464,466-467,503,506-509
+src/memstrand/stores/graph_sqlite.py
+  s_cc0c7560faa1c4::t_38c78375c6c05e 22-30,34-36,66,86,94,97-100,103,111-116
+  s_cc0c7560faa1c4::t_b40fd2c75c2dbc 220,223,237,239
+CHANGELOG.md
+  s_cc0c7560faa1c4::t_8798ec6a16217b 7-86
+docs/architecture.md
+  s_cc0c7560faa1c4::t_b19834f196ee5d 68-74
+docs/cli.md
+  s_cc0c7560faa1c4::t_7a9bf067cdc670 12,25-27,35-47,58-61,63-65,72-73,83-93,102-109,114-115
+docs/configuration.md
+  s_cc0c7560faa1c4::t_d80667cc089cbc 41-44
+docs/integrations.md
+  s_cc0c7560faa1c4::t_aac60c61a499f3 153-179,235-236
+docs/python-api.md
+  s_cc0c7560faa1c4::t_f8184e5c743f16 12-14,21-25,30-31,33-34,39
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_830359d72cef72 33-35,43-56,172-183,185,192-194,203,205-216,219-225,231
+src/memstrand/sanitize.py
+  s_cc0c7560faa1c4::t_6acd927de529cc 1-160
+src/memstrand/server.py
+  s_cc0c7560faa1c4::t_566aa681f6fe63 82,106-117,417,440,454,466-467,483-484,530-533,557-561,577,582-635,684-690,779-780,787-793,809-811,866-870,1037-1040
+tests/test_core_v2.py
+  s_cc0c7560faa1c4::t_fbfbb7376a55e9 81-83,86-91
+tests/test_hooks.py
+  s_cc0c7560faa1c4::t_d800f42732369f 16,166,225-230,233-236,238-241,249
+tests/test_review_fixes.py
+  s_cc0c7560faa1c4::t_a3892f6016441d 261-262,266-267
+tests/test_round3_core.py
+  s_cc0c7560faa1c4::t_1b7b6c2ef04f6c 127
+tests/test_scope_review.py
+  s_cc0c7560faa1c4::t_ddaa8368deb0dc 1-280
+tests/test_scoping_read_agent.py
+  s_cc0c7560faa1c4::t_30eb704788062c 1-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "b8d3a245b2f0ce0139aabf0248ac792ddf515ace",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
