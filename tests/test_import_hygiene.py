@@ -167,11 +167,7 @@ def test_hook_print_config_does_not_load_onnxruntime():
     assert not any(present.values()), present
 
 
-def test_cli_import_time_is_modest():
-    # Lenient threshold: this guards against a regression that drags
-    # qdrant_client/fastembed back onto the hot path (which cost ~400ms
-    # before this fix went in), not a tight budget that could flake on a
-    # slow or loaded CI runner.
+def _cli_import_us() -> tuple[int, str]:
     result = subprocess.run(
         [sys.executable, "-X", "importtime", "-c", "import memstrand.cli"],
         capture_output=True,
@@ -182,5 +178,19 @@ def test_cli_import_time_is_modest():
     assert result.returncode == 0, result.stderr
     line = next(ln for ln in result.stderr.splitlines() if ln.strip().endswith("| memstrand.cli"))
     # `import time:   self us | cumulative us | name`
-    cumulative_us = int(line.split("|")[1].strip())
-    assert cumulative_us < 250_000, f"memstrand.cli import took {cumulative_us}us: {line!r}"
+    return int(line.split("|")[1].strip()), line
+
+
+def test_cli_import_time_is_modest():
+    # Lenient threshold: this guards against a regression that drags
+    # qdrant_client/fastembed back onto the hot path (which cost ~400ms
+    # before this fix went in), not a tight budget that could flake on a
+    # slow or loaded CI runner. Best of 3: a single cold run on a shared
+    # runner can spike past the budget on its own (seen on macos-latest:
+    # 257ms vs ~100ms locally, with no new imports), while a real
+    # regression adds its ~400ms to EVERY run, so the minimum still catches it.
+    runs = [_cli_import_us() for _ in range(3)]
+    cumulative_us, line = min(runs)
+    assert cumulative_us < 250_000, (
+        f"memstrand.cli import took {cumulative_us}us (best of {[us for us, _ in runs]}): {line!r}"
+    )
