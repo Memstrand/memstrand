@@ -491,15 +491,57 @@ class Memory:
         task_id: str | None = None,
         scopes: list[str] | None = None,
         agent: str | None = None,
+        ts: float | None = None,
     ) -> None:
-        """Append one raw turn. `task_id` is the session's own (primary)
+        """Append one raw turn. `ts` (epoch seconds) overrides the recorded
+        time, e.g. a backfilled turn's original time. `task_id` is the session's own (primary)
         scope; `scopes` lists other scopes this turn touched (repos read or
         edited via tool calls) — distillation offers them as candidates.
         `agent` (e.g. "claude-code@host") is inherited by distilled atoms."""
         with self._lock:
             self.sessions.append_turn(
-                session_id, role, content, task_id=task_id, scopes=scopes, agent=agent
+                session_id, role, content, task_id=task_id, scopes=scopes, agent=agent, ts=ts
             )
+
+    # -- raw session access (owner-facing; NOT scope-filtered) ----------------------
+
+    def session_turns(self, ref: str, limit: int | None = None) -> dict:
+        """The logged turns of one session. `ref` may be the full session id,
+        a Claude Code session UUID (without the `claude-code:` prefix), or a
+        unique prefix of either. Raw turns are not scope-filtered: like
+        `list()`/`get()`, this is an owner-facing browse surface (CLI/REST),
+        deliberately not exposed as an MCP tool. Raises KeyError if nothing
+        matches, ValueError if `ref` is ambiguous."""
+        with self._lock:
+            matches = self.sessions.find_sessions(ref)
+            if not matches:
+                raise KeyError(f"no such session: {ref}")
+            if len(matches) > 1:
+                shown = ", ".join(matches[:5]) + (" ..." if len(matches) > 5 else "")
+                raise ValueError(f"session {ref!r} is ambiguous: {shown}")
+            turns = self.sessions.get_session(matches[0])
+            if limit is not None:
+                turns = turns[:limit]
+            return {"session_id": matches[0], "turns": turns}
+
+    def mark_distilled(self, session_id: str) -> int:
+        """Mark every turn logged so far in `session_id` as distilled without
+        running the LLM (e.g. a backfilled session too small to be worth
+        it), so consolidation won't distill it later. Returns the watermark."""
+        with self._lock:
+            turns = self.sessions.get_session(session_id)
+            last = max((t["id"] for t in turns), default=0)
+            if last:
+                self.sessions.mark_distilled(session_id, last)
+            return last
+
+    def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
+        """Full-text search over raw logged turns (owner-facing, not
+        scope-filtered — see `session_turns`). `session` narrows to one
+        session (same ref forms as `session_turns`)."""
+        with self._lock:
+            session_id = self.session_turns(session, limit=0)["session_id"] if session else None
+            return self.sessions.search_turns(query, limit=limit, session_id=session_id)
 
     def forget(self, atom_id: str) -> bool:
         """Delete with provenance-chain cleanup. Returns False if the
@@ -1237,20 +1279,23 @@ class Memory:
             if not context_lines:
                 return "I don't know — nothing in memory covers this."
             try:
-                return chat_completion(
-                    self.llm_base_url,
-                    self.llm_model,
-                    [
-                        {
-                            "role": "system",
-                            "content": "Answer ONLY from the memories below. "
-                            "If they don't cover the question, say so.",
-                        },
-                        {"role": "user", "content": f"Memories:\n{context_lines}\n\nQ: {question}"},
-                    ],
-                    timeout=120.0,
-                    api_key=self.llm_api_key,
-                )
+                from .pipeline.usage import purpose
+
+                with purpose("answer"):
+                    return chat_completion(
+                        self.llm_base_url,
+                        self.llm_model,
+                        [
+                            {
+                                "role": "system",
+                                "content": "Answer ONLY from the memories below. "
+                                "If they don't cover the question, say so.",
+                            },
+                            {"role": "user", "content": f"Memories:\n{context_lines}\n\nQ: {question}"},
+                        ],
+                        timeout=120.0,
+                        api_key=self.llm_api_key,
+                    )
             except LLMUnavailable as e:
                 # Surface the real reason (down vs. rejected the request)
                 # instead of a generic "unavailable" that hides a 4xx like
@@ -1262,12 +1307,20 @@ class Memory:
     def improve(self, session_ids: list[str] | None = None, background: bool = False) -> dict:
         """Distill raw sessions into typed permanent memory. `None` means
         every undistilled session. `background=True` runs on a daemon
-        thread and returns `{"queued": [...]}` immediately."""
+        thread and returns `{"queued": [...]}` immediately.
+
+        The synchronous path serializes on `_improve_lock` (one distillation
+        at a time, same as the background path) but NOT on `self._lock`:
+        distillation spends seconds-to-minutes in LLM calls, and holding the
+        store-wide lock for that long would block every other request on a
+        shared daemon (recall, the context hook, ...). Each store mutation
+        inside distillation takes `self._lock` itself."""
         from .pipeline import distill
 
-        with self._lock:
-            if background:
+        if background:
+            with self._lock:
                 return distill.improve_async(self, session_ids)
+        with self._improve_lock:
             return distill.distill_sessions(self, session_ids)
 
     def consolidate(self, now: datetime | None = None) -> dict:

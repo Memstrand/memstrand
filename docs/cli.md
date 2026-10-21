@@ -25,9 +25,13 @@
 | `scope <id>` | show or change which repos/tasks a memory applies to |
 | `scopes` / `scopes rename <old> <new>` | known scopes with counts / re-key one scope |
 | `review` | memories waiting for you to decide their scope |
+| `session <id>` | print a session's logged conversation (full id, Claude Code UUID, or unique prefix) |
+| `search-sessions <query>` | full-text search over logged session turns |
 | `stats` | atom/edge/session counts, by category and task |
+| `usage` | LLM tokens used by distillation/answers, by day, purpose, session, or model |
 | `config` | effective configuration |
 | `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
+| `hook backfill [paths…]` | distill existing Claude Code transcripts from disk |
 
 Every data-touching command talks to a running daemon if one is up,
 otherwise opens a local store directly.
@@ -85,12 +89,33 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
   `--global`, `--keep` (confirm as-is). Any of these resolves a pending
   scope review. Removing every scope is refused — use `forget`.
 - `review`: `--limit`, `--json`
+- `session <id>`: `--limit`, `--json`. `memstrand show <id>` prints each
+  memory's source session.
+- `search-sessions <query>`: `--session`, `--limit`, `--json`. Every word
+  must match (FTS5). Raw turns are not scope-filtered — like `list`/`show`,
+  these are owner-facing; neither is exposed as an MCP tool.
 - `scopes`: `--json`; `scopes rename <old> <new>` re-keys every memory in
   `old` (e.g. a folder name to its remote URL)
 - `hook claude-code`: `--task-from {auto,cwd,none,env}`, `--no-improve`.
   `cwd` scopes by the cwd's repo key (remote URL, else `local:` path);
   `auto` (default) also records per-turn touched repos for distillation
 - `hook claude-code-context`: `--task-from {auto,cwd,none,env}`, `--limit`
+- `hook backfill [paths…]`: paths are transcripts, project folders, or the
+  projects folder (default `~/.claude/projects`); `--project` (substring,
+  repeatable), `--since YYYY-MM-DD`, `--limit N` (oldest first), `--chunk`
+  (turns per distillation call, default 40), `--min-turns N` (smaller
+  sessions are logged and searchable but never distilled — no LLM cost),
+  `--skip-active-minutes`
+  (default 10), `--task-from`, `--no-improve`, `--dry-run`, `--timeout`.
+  Subagent transcripts are skipped. Resumable: progress is shared with the
+  live Stop hook, so re-running continues where it stopped and never
+  re-logs turns; `--limit N` picks the next N sessions that still have
+  unprocessed turns, so repeated runs work through everything in batches.
+  Prints LLM tokens per session and per run.
+- `usage`: `--by {day,purpose,session,model}`, `--since YYYY-MM-DD`,
+  `--json`. Reads `{MEMSTRAND_HOME}/llm_usage.jsonl`, where every LLM call
+  records the token usage the endpoint reported, tagged by purpose
+  (`extract`, `trust`, `judge`, `answer`, `ping`) and session.
 - `hook print-config`: prints the Claude Code `settings.json` hooks snippet
 
 ## REST / MCP reference
@@ -100,6 +125,7 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 `POST /turns`, `POST /improve`, `POST /answer`, `POST /context`,
 `POST /consolidate`, `POST /ingest`, `GET /export`, `POST /import`,
 `POST /forget_source`, `POST /atoms/{id}/scopes` (`{"set"|"add"|"remove": [...]}`),
+`GET /sessions/{id}/turns` (`?limit=`), `GET /turns/search` (`?q=&limit=&session=`),
 `GET /scopes`, `POST /scopes/rename` (`{"old","new"}`), `GET /reviews`
 (`?limit=`, read-only), `POST /reviews` (`{"limit","session"}`: each review
 returned once per session and counted as shown), and `{"keep": true}` on

@@ -178,6 +178,40 @@ see it with `memstrand show <id>` or filter with `memstrand list --agent`.
 A memory can belong to several repos at once — see `memstrand scope` in
 [docs/cli.md](cli.md#scopes).
 
+### Backfilling existing sessions
+
+The hooks only see sessions from the moment they're installed. To distill
+sessions already on disk:
+
+```bash
+memstrand hook backfill --dry-run              # what would be processed, ~tokens
+memstrand hook backfill --limit 3              # pilot: the 3 oldest sessions
+memstrand hook backfill --project my-repo      # one project's sessions
+memstrand hook backfill                        # everything under ~/.claude/projects
+```
+
+Sessions are fed to distillation in chunks (`--chunk`, default 40 turns)
+so a long session never becomes one huge extraction call. It's resumable
+and shares progress with the live Stop hook, so interrupting and
+re-running is safe. Distillation calls your LLM for every chunk — use
+`--dry-run` first to see how much text that is.
+
+Distilled memories keep a link to their source session. To get back to
+the original conversation — e.g. a memory says "switched to Kaniko" and
+you want the discussion behind it:
+
+```bash
+memstrand show <memory-id>              # includes "session: claude-code:<uuid>"
+memstrand session <uuid-or-prefix>      # the logged conversation (text turns)
+memstrand search-sessions "kaniko artifactory"
+```
+
+memstrand stores the text of each turn, not tool calls/outputs. Claude
+Code deletes its own transcripts after 30 days by default
+(`cleanupPeriodDays`); keep a separate transcript archive if you need the
+full sessions, and point `memstrand hook backfill` at restored copies to
+distill sessions older than that.
+
 If a daemon is running but rejects the hook's `MEMSTRAND_TOKEN` (missing
 or wrong), the hook fails fast with a "set MEMSTRAND_TOKEN" message rather
 than silently opening a second, unscoped local store — see

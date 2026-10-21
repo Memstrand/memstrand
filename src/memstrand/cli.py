@@ -249,6 +249,8 @@ def _cmd_show(args) -> int:
             print(f"scope set:  {atom['scope_status']}")
         if atom.get("agent"):
             print(f"agent:      {atom['agent']}")
+        if atom.get("session_id"):
+            print(f"session:    {atom['session_id']}  (memstrand session {atom['session_id']})")
         if atom.get("source"):
             source_line = atom["source"]
             if atom.get("source_ref"):
@@ -502,6 +504,45 @@ def _cmd_scope(args) -> int:
     return 0
 
 
+def _fmt_ts(ts) -> str:
+    try:
+        return datetime.fromtimestamp(float(ts), UTC).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "?"
+
+
+def _cmd_session(args) -> int:
+    with _memory_session() as mem:
+        result = mem.session_turns(args.id, limit=args.limit)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    turns = result["turns"]
+    print(f"session {result['session_id']} — {len(turns)} turns")
+    for t in turns:
+        touched = f"  [touched: {', '.join(t['scopes'])}]" if t.get("scopes") else ""
+        print(f"\n--- {_fmt_ts(t.get('ts'))}  {t['role']}{touched}")
+        print(t["content"])
+    return 0
+
+
+def _cmd_search_sessions(args) -> int:
+    with _memory_session() as mem:
+        results = mem.search_turns(args.query, limit=args.limit, session=args.session)
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return 0
+    if not results:
+        print("(no matching turns)")
+        return 0
+    for r in results:
+        snippet = " ".join(str(r.get("snippet") or "").split())
+        print(f"{_fmt_ts(r.get('ts'))}  {r['session_id']}  {r['role']}")
+        print(f"    {snippet}")
+    print("\nfull conversation: memstrand session <session id>")
+    return 0
+
+
 def _cmd_review(args) -> int:
     from .scopes import short_name
 
@@ -656,6 +697,133 @@ def _cmd_hook_claude_code_context(args) -> int:
     return 0
 
 
+def _cmd_hook_backfill(args) -> int:
+    """Distill existing Claude Code transcripts from disk (see
+    `hooks.backfill_transcript`). Unlike the live hooks this is an
+    interactive command: it reports progress and real errors."""
+    from . import hooks
+    from .scopes import short_name
+
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since).replace(tzinfo=UTC)
+        except ValueError as exc:
+            raise _CliError(f"--since must be YYYY-MM-DD: {args.since!r}") from exc
+    roots = [Path(p) for p in args.paths] or [Path("~/.claude/projects").expanduser()]
+    transcripts = hooks.discover_transcripts(
+        roots, projects=args.project, since=since, skip_active_minutes=args.skip_active_minutes,
+    )
+    # only sessions with turns not yet logged, so `--limit 50` twice means
+    # the next 50 sessions, not the same 50 again
+    transcripts = [p for p in transcripts if hooks.pending_turn_count(p) > 0]
+    if args.limit is not None:
+        transcripts = transcripts[: args.limit]
+    if not transcripts:
+        print("(no transcripts with unprocessed turns matched)")
+        return 0
+
+    totals = {"sessions": 0, "turns": 0, "chars": 0, "atoms": 0, "scope_reviews": 0, "errors": 0,
+              "skipped_small": 0, "distilled_chars": 0, "calls": 0, "prompt_tokens": 0,
+              "completion_tokens": 0}
+    mem = None if args.dry_run else get_memory(timeout=args.timeout)
+    try:
+        for i, path in enumerate(transcripts, start=1):
+            try:
+                r = hooks.backfill_transcript(
+                    mem, path, task_from=args.task_from, chunk=args.chunk,
+                    improve=not args.no_improve, dry_run=args.dry_run, min_turns=args.min_turns,
+                )
+            except _EXPECTED_ERRORS as exc:
+                print(f"[{i}/{len(transcripts)}] {path.name}: error: {exc}", file=sys.stderr)
+                totals["errors"] += 1
+                continue
+            totals["sessions"] += 1
+            for key in ("turns", "chars", "atoms", "scope_reviews"):
+                totals[key] += r[key]
+            totals["errors"] += len(r["errors"])
+            small = r["turns"] < args.min_turns
+            if r["distilled"]:
+                totals["distilled_chars"] += r["chars"]
+                for key in ("calls", "prompt_tokens", "completion_tokens"):
+                    totals[key] += r["usage"][key]
+            elif small:
+                totals["skipped_small"] += 1
+            where = short_name(r.get("task_id") or "") if r.get("task_id") else Path(r["cwd"]).name
+            line = f"[{i}/{len(transcripts)}] {r['session'][:8]}  {where:<28} turns={r['turns']:<4}"
+            if args.dry_run:
+                line += f" ~{r['chars'] // 4} text tokens" + ("  (below --min-turns: log only)" if small else "")
+            elif not r["distilled"]:
+                line += " logged only" + (" (below --min-turns)" if small else "")
+            else:
+                u = r["usage"]
+                line += (
+                    f" atoms={r['atoms']} reviews={r['scope_reviews']}"
+                    f"  llm: {u['calls']} calls, {u['prompt_tokens']:,} in / {u['completion_tokens']:,} out"
+                )
+                if r["errors"]:
+                    line += f" errors={len(r['errors'])} ({r['errors'][0].get('error', '')[:80]})"
+            print(line, flush=True)
+    finally:
+        if mem is not None:
+            mem.close()
+    summary = f"\n{totals['sessions']} sessions, {totals['turns']} turns"
+    if args.dry_run:
+        summary += f", ~{totals['chars'] // 4} tokens of text (dry run: nothing logged)"
+        if totals["skipped_small"]:
+            summary += f"; {totals['skipped_small']} below --min-turns (log only, no LLM)"
+    else:
+        summary += f", {totals['atoms']} memories, {totals['scope_reviews']} scope questions queued"
+        if totals["skipped_small"]:
+            summary += f", {totals['skipped_small']} small sessions logged without distilling"
+    if totals["errors"]:
+        summary += f", {totals['errors']} errors"
+    print(summary)
+    if not args.dry_run and totals["calls"]:
+        total_tokens = totals["prompt_tokens"] + totals["completion_tokens"]
+        text_tokens = max(1, totals["distilled_chars"] // 4)
+        print(
+            f"LLM usage: {totals['calls']} calls, {totals['prompt_tokens']:,} input + "
+            f"{totals['completion_tokens']:,} output = {total_tokens:,} tokens "
+            f"(~{total_tokens / text_tokens:.1f}x the {text_tokens:,} tokens of conversation text distilled)"
+        )
+    return 1 if totals["errors"] else 0
+
+
+def _cmd_usage(args) -> int:
+    """Summarize the local LLM token ledger ({home}/llm_usage.jsonl)."""
+    from .pipeline import usage
+
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since).replace(tzinfo=UTC).timestamp()
+        except ValueError as exc:
+            raise _CliError(f"--since must be YYYY-MM-DD: {args.since!r}") from exc
+    rows = usage.read_ledger(since=since)
+    groups = usage.summarize(rows, by=args.by)
+    if args.json:
+        print(json.dumps(groups, indent=2))
+        return 0
+    if not rows:
+        print("(no LLM calls recorded)")
+        return 0
+    width = max(len(k) for k in groups)
+    print(f"{args.by:<{width}}  {'calls':>6}  {'input':>12}  {'output':>10}  {'total':>12}")
+    for key, g in sorted(groups.items()):
+        total = g["prompt_tokens"] + g["completion_tokens"]
+        print(f"{key:<{width}}  {g['calls']:>6}  {g['prompt_tokens']:>12,}  {g['completion_tokens']:>10,}  {total:>12,}")
+    t = usage.summarize(rows, by="model")
+    calls = sum(g["calls"] for g in t.values())
+    p = sum(g["prompt_tokens"] for g in t.values())
+    c = sum(g["completion_tokens"] for g in t.values())
+    print(f"{'TOTAL':<{width}}  {calls:>6}  {p:>12,}  {c:>10,}  {p + c:>12,}")
+    unreported = sum(1 for r in rows if not r.get("reported", True))
+    if unreported:
+        print(f"note: {unreported} calls had no usage reported by the endpoint (counted as 0)")
+    return 0
+
+
 def _cmd_hook_print_config(args) -> int:
     from .hooks import CLAUDE_CODE_SETTINGS_SNIPPET
 
@@ -806,6 +974,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep", action="store_true", help="confirm the current scopes as-is")
     p.set_defaults(func=_cmd_scope)
 
+    p = sub.add_parser("session", help="print a session's logged conversation")
+    p.add_argument("id", help="session id, Claude Code session UUID, or a unique prefix")
+    p.add_argument("--limit", type=int, default=None, help="first N turns only")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_session)
+
+    p = sub.add_parser("search-sessions", help="full-text search over logged session turns")
+    p.add_argument("query")
+    p.add_argument("--session", default=None, help="only this session (id or prefix)")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_search_sessions)
+
     p = sub.add_parser("review", help="memories waiting for you to decide their scope")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--json", action="store_true")
@@ -819,6 +1000,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("old")
     sp.add_argument("new")
     sp.set_defaults(func=_cmd_scopes)
+
+    p = sub.add_parser("usage", help="LLM token usage recorded by distillation and answers")
+    p.add_argument("--by", default="day", choices=["day", "purpose", "session", "model"])
+    p.add_argument("--since", default=None, help="only calls on/after YYYY-MM-DD")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_usage)
 
     p = sub.add_parser("stats", help="show memory statistics")
     p.add_argument("--json", action="store_true")
@@ -842,6 +1029,26 @@ def _build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
     hp.add_argument("--limit", type=int, default=8)
     hp.set_defaults(func=_cmd_hook_claude_code_context)
+
+    hp = hook_sub.add_parser(
+        "backfill", help="distill existing Claude Code transcripts from disk (resumable, chunked)"
+    )
+    hp.add_argument("paths", nargs="*", help="transcripts, project folders, or the projects folder "
+                    "(default: ~/.claude/projects)")
+    hp.add_argument("--project", action="append", default=None,
+                    help="only project folders containing this text (repeatable)")
+    hp.add_argument("--since", default=None, help="only transcripts modified on/after YYYY-MM-DD")
+    hp.add_argument("--limit", type=int, default=None, help="at most N sessions (oldest first)")
+    hp.add_argument("--chunk", type=int, default=40, help="turns per distillation call (default 40)")
+    hp.add_argument("--min-turns", type=int, default=0,
+                    help="sessions with fewer pending turns are logged but not distilled (no LLM cost)")
+    hp.add_argument("--skip-active-minutes", type=float, default=10.0,
+                    help="skip transcripts modified this recently (live sessions); default 10")
+    hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
+    hp.add_argument("--no-improve", action="store_true", help="log turns only; distill later")
+    hp.add_argument("--dry-run", action="store_true", help="show what would be processed; write nothing")
+    hp.add_argument("--timeout", type=float, default=900.0, help="per-request timeout against the daemon (s)")
+    hp.set_defaults(func=_cmd_hook_backfill)
 
     hp = hook_sub.add_parser("print-config", help="print the Claude Code settings.json hooks snippet")
     hp.set_defaults(func=_cmd_hook_print_config)

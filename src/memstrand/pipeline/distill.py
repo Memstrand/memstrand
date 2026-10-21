@@ -62,6 +62,7 @@ import unicodedata
 from typing import TYPE_CHECKING
 
 from ..schema import GLOBAL_SCOPE, Category, MemoryEdge, Provenance, RelationType
+from . import usage
 from .extract import _extract_json_array, chat_completion, extract_atoms
 
 if TYPE_CHECKING:
@@ -94,22 +95,23 @@ def _judge(mem: Memory, candidate: dict, existing: list[dict]) -> dict:
     lines = "\n".join(
         f"- [{h['id']}] ({h['category']}) {h['content']}" for h in existing if h["content"]
     )
-    raw = chat_completion(
-        mem.llm_base_url,
-        mem.llm_model,
-        [
-            {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Candidate ({candidate['category'].value}): {candidate['content']}\n"
-                    f"Existing memories:\n{lines}"
-                ),
-            },
-        ],
-        timeout=120.0,
-        api_key=mem.llm_api_key,
-    )
+    with usage.purpose("judge"):
+        raw = chat_completion(
+            mem.llm_base_url,
+            mem.llm_model,
+            [
+                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Candidate ({candidate['category'].value}): {candidate['content']}\n"
+                        f"Existing memories:\n{lines}"
+                    ),
+                },
+            ],
+            timeout=120.0,
+            api_key=mem.llm_api_key,
+        )
     try:
         verdict = _extract_json_array(f"[{raw}]")[0]
     except (ValueError, json.JSONDecodeError, IndexError, TypeError, AttributeError):
@@ -309,9 +311,10 @@ def _enforce_global_trust_boundary(
     user_candidates: list[dict] = []
     if user_turns:
         try:
-            user_candidates = extract_atoms(
-                user_turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key
-            )
+            with usage.purpose("trust"):
+                user_candidates = extract_atoms(
+                    user_turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key
+                )
         except Exception:  # noqa: BLE001 - fail closed: no corroboration, no trust
             user_candidates = []
 
@@ -385,18 +388,19 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
     labels = _scope_labels(candidate_keys) if len(candidate_keys) > 1 else {}
 
     try:
-        if labels:
-            label_of = {key: label for label, key in labels.items()}
-            annotated = [
-                {**t, "touched": [label_of[k] for k in t.get("scopes") or [] if k in label_of]}
-                for t in turns
-            ]
-            candidates = extract_atoms(
-                annotated, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key,
-                scope_candidates=[label_of[k] for k in candidate_keys],
-            )
-        else:
-            candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
+        with usage.purpose("extract"):
+            if labels:
+                label_of = {key: label for label, key in labels.items()}
+                annotated = [
+                    {**t, "touched": [label_of[k] for k in t.get("scopes") or [] if k in label_of]}
+                    for t in turns
+                ]
+                candidates = extract_atoms(
+                    annotated, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key,
+                    scope_candidates=[label_of[k] for k in candidate_keys],
+                )
+            else:
+                candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
     except Exception as e:  # noqa: BLE001 - fail closed: no promotion, session retried
         report["errors"].append({"session": session_id, "error": str(e)})
         return report  # don't mark distilled: a later run retries these same turns
@@ -516,8 +520,14 @@ def distill_sessions(mem: Memory, session_ids: list[str] | None) -> dict:
     """Distill `session_ids`, or every undistilled session when None.
     Each session is distilled incrementally (only new turns)."""
     ids = session_ids if session_ids is not None else mem.sessions.undistilled_sessions()
-    results = [_distill_one_session(mem, sid) for sid in ids]
-    return _merge_reports(ids, results)
+    results = []
+    with usage.collect() as totals:
+        for sid in ids:
+            with usage.for_session(sid):
+                results.append(_distill_one_session(mem, sid))
+    merged = _merge_reports(ids, results)
+    merged["usage"] = totals
+    return merged
 
 
 def improve_async(mem: Memory, session_ids: list[str] | None) -> dict:

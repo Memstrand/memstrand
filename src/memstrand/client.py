@@ -167,11 +167,12 @@ class RemoteMemory:
         task_id: str | None = None,
         scopes: list[str] | None = None,
         agent: str | None = None,
+        ts: float | None = None,
     ) -> None:
         payload = _drop_none(
             {
                 "session_id": session_id, "role": role, "content": content,
-                "task_id": task_id, "scopes": scopes, "agent": agent,
+                "task_id": task_id, "scopes": scopes, "agent": agent, "ts": ts,
             }
         )
         self._request("POST", "/api/turns", json=payload)
@@ -342,6 +343,22 @@ class RemoteMemory:
             result = self._request("GET", "/api/reviews", params={"limit": limit})
         return result.get("reviews", []) if result else []
 
+    def session_turns(self, ref: str, limit: int | None = None) -> dict:
+        params = _drop_none({"limit": limit})
+        result = self._request("GET", f"/api/sessions/{ref}/turns", params=params, not_found_ok=True)
+        if result is None:
+            raise KeyError(f"no such session: {ref}")
+        return result
+
+    def mark_distilled(self, session_id: str) -> int:
+        result = self._request("POST", f"/api/sessions/{session_id}/distilled")
+        return int(result.get("last_turn_id", 0)) if result else 0
+
+    def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
+        params = _drop_none({"q": query, "limit": limit, "session": session})
+        result = self._request("GET", "/api/turns/search", params=params)
+        return result.get("results", []) if result else []
+
     def rename_scope(self, old: str, new: str) -> int:
         result = self._request("POST", "/api/scopes/rename", json={"old": old, "new": new})
         return result.get("renamed", 0) if result else 0
@@ -452,7 +469,7 @@ def open_local_memory(settings: Settings | None = None) -> Memory:
         raise
 
 
-def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
+def get_memory(prefer_remote: bool = True, timeout: float = 30.0) -> RemoteMemory | Memory:
     """`RemoteMemory` if the daemon is up, a local `Memory()` if nothing
     answers, or `DaemonRejected` if something answers but refuses this
     client (see `probe_daemon`) — the caller gets the real reason instead
@@ -463,7 +480,9 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
     them will fail outright (Qdrant's on-disk lock) or silently race
     (SQLite WAL from two processes). The daemon, when running, is always
     the source of truth; local mode exists for one-shot CLI use with no
-    daemon around, and for tests.
+    daemon around, and for tests. `timeout` is the per-request timeout for
+    the remote client (long-running calls like a synchronous `improve`
+    need more than the default).
     """
     settings = get_settings()
     token = os.environ.get("MEMSTRAND_TOKEN")
@@ -472,7 +491,7 @@ def get_memory(prefer_remote: bool = True) -> RemoteMemory | Memory:
         resp = _probe_response(url, 0.5, token)
         if resp is not None:
             if resp.status_code == 200:
-                return RemoteMemory(settings.server_url, token=token)
+                return RemoteMemory(settings.server_url, token=token, timeout=timeout)
             raise DaemonRejected(
                 f"a memstrand daemon is running at {settings.server_url} but rejected "
                 f"this client (HTTP {resp.status_code}) — set MEMSTRAND_TOKEN to the "

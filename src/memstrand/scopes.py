@@ -62,10 +62,13 @@ def normalize_remote_url(url: str) -> str | None:
 
 def git_root(path: str | Path) -> Path | None:
     """Nearest ancestor (or `path` itself) containing `.git` -- a directory
-    for a normal clone, a file for a worktree/submodule."""
+    for a normal clone, a file for a worktree/submodule. Walks the path as
+    written (normalized, symlinks NOT followed): a venv's `bin/python3`
+    symlinks into e.g. /opt/homebrew — itself a git checkout — and following
+    it would attribute the file to an unrelated repo."""
     try:
-        start = Path(path).expanduser().resolve()
-    except OSError:
+        start = Path(os.path.abspath(Path(path).expanduser()))
+    except (OSError, ValueError):
         return None
     if start.is_file():
         start = start.parent

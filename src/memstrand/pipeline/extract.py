@@ -55,6 +55,14 @@ wording decides: "in this repo ..." is scoped, "always / in every project
 annotated [touched: ...] show which repos that turn read or edited. Never
 invent repo names; use only names from the list.
 One atomic fact per item. Skip chit-chat and throwaway context.
+Only keep what will still be useful weeks from now: decisions and why,
+how things are set up or configured, root causes and their fixes,
+conventions, gotchas, and the user's preferences and instructions.
+Skip one-off events and transient state: specific job/build/run IDs, a
+single failed attempt that was then fixed (keep the lesson, not the
+event), step-by-step progress, intermediate edits to a document, and
+anything that only describes what happened in this session. When unsure
+whether an item is durable, leave it out — fewer, better memories.
 Prefer high-signal items. Prefer explicit_statement when the user said
 it directly, observed when it came from tool output, inferred otherwise.
 Keep confidence honest: 0.9+ only for directly stated facts.\
@@ -139,9 +147,14 @@ def chat_completion(
             f"local LLM request failed ({type(e).__name__}): {e}", transient=True
         ) from e
     try:
-        return resp.json()["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, ValueError) as e:
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, ValueError, TypeError) as e:
         raise LLMUnavailable(f"malformed LLM response from {base_url}: {e}") from e
+    from . import usage
+
+    usage.record(model, data.get("usage") if isinstance(data, dict) else None)
+    return content
 
 
 def _extract_json_array(text: str) -> list:

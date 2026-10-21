@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -64,6 +65,23 @@ class SqliteSessionStore:
             # scoping v2 phase 4: who logged the turn ("claude-code@host", ...)
             if "agent" not in cols:
                 self.conn.execute("ALTER TABLE turns ADD COLUMN agent TEXT DEFAULT ''")
+            # full-text index over raw turns (session search); optional —
+            # falls back to substring search if this SQLite lacks FTS5
+            try:
+                self.conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS turns_fts USING fts5("
+                    "content, turn_id UNINDEXED, session_id UNINDEXED, "
+                    "tokenize = 'unicode61 remove_diacritics 2')"
+                )
+                self._fts = True
+                indexed = self.conn.execute("SELECT COUNT(*) FROM turns_fts").fetchone()[0]
+                if indexed == 0:
+                    self.conn.execute(
+                        "INSERT INTO turns_fts(content, turn_id, session_id) "
+                        "SELECT content, id, session_id FROM turns"
+                    )
+            except sqlite3.OperationalError:
+                self._fts = False
             # legacy single-row-per-atom ledger: untouched, kept for old DBs
             self.conn.execute(
                 """CREATE TABLE IF NOT EXISTS provenance(
@@ -103,7 +121,7 @@ class SqliteSessionStore:
     ) -> None:
         touched = [s for s in (scopes or []) if s]
         with self._lock:
-            self.conn.execute(
+            cur = self.conn.execute(
                 "INSERT INTO turns(session_id, task_id, role, content, ts, scopes, agent) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (
@@ -113,6 +131,11 @@ class SqliteSessionStore:
                     agent or "",
                 ),
             )
+            if self._fts:
+                self.conn.execute(
+                    "INSERT INTO turns_fts(content, turn_id, session_id) VALUES (?,?,?)",
+                    (content, cur.lastrowid, session_id),
+                )
             self.conn.commit()
 
     def get_session(self, session_id: str, after_id: int = 0) -> list[dict]:
@@ -143,7 +166,66 @@ class SqliteSessionStore:
     def clear_session(self, session_id: str) -> None:
         with self._lock:
             self.conn.execute("DELETE FROM turns WHERE session_id=?", (session_id,))
+            if self._fts:
+                self.conn.execute("DELETE FROM turns_fts WHERE session_id=?", (session_id,))
             self.conn.commit()
+
+    def find_sessions(self, ref: str) -> list[str]:
+        """Session ids matching `ref`: exact, then `claude-code:<ref>`, then
+        any id (with or without that prefix) starting with `ref`."""
+        with self._lock:
+            for exact in (ref, f"claude-code:{ref}"):
+                if self.conn.execute(
+                    "SELECT 1 FROM turns WHERE session_id=? LIMIT 1", (exact,)
+                ).fetchone():
+                    return [exact]
+            like = ref.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            rows = self.conn.execute(
+                "SELECT DISTINCT session_id FROM turns WHERE session_id LIKE ? ESCAPE '\\' "
+                "OR session_id LIKE ? ESCAPE '\\' ORDER BY session_id",
+                (f"{like}%", f"claude-code:{like}%"),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def search_turns(self, query: str, limit: int = 20, session_id: str | None = None) -> list[dict]:
+        """Full-text search over raw logged turns, best match first. Every
+        word must appear (FTS5), or the whole query as a substring when FTS5
+        isn't available."""
+        words = re.findall(r"\w+", query, re.UNICODE)
+        if not words:
+            return []
+        with self._lock:
+            if self._fts:
+                match = " ".join(f'"{w}"' for w in words)
+                sql = (
+                    "SELECT t.id, t.session_id, t.role, t.ts, t.content, "
+                    "snippet(turns_fts, 0, '[', ']', '…', 16) "
+                    "FROM turns_fts JOIN turns t ON t.id = turns_fts.turn_id "
+                    "WHERE turns_fts MATCH ?"
+                )
+                params: list = [match]
+                if session_id:
+                    sql += " AND t.session_id = ?"
+                    params.append(session_id)
+                sql += " ORDER BY bm25(turns_fts) LIMIT ?"
+                params.append(limit)
+                try:
+                    rows = self.conn.execute(sql, params).fetchall()
+                except sqlite3.OperationalError:
+                    return []
+            else:
+                sql = "SELECT id, session_id, role, ts, content, NULL FROM turns WHERE content LIKE ?"
+                params = [f"%{query}%"]
+                if session_id:
+                    sql += " AND session_id = ?"
+                    params.append(session_id)
+                sql += " ORDER BY id DESC LIMIT ?"
+                params.append(limit)
+                rows = self.conn.execute(sql, params).fetchall()
+        return [
+            {"id": i, "session_id": sid, "role": r, "ts": ts, "content": c, "snippet": snip or c[:200]}
+            for i, sid, r, ts, c, snip in rows
+        ]
 
     # -- incremental distillation bookkeeping ------------------------------------
 

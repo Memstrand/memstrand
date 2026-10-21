@@ -77,14 +77,17 @@ def _is_llm_reachable(mem) -> bool:
     so distillation should still be attempted and report the real
     per-session error, instead of this gate silently skipping it with a
     misleading "local LLM unreachable"."""
+    from .usage import purpose
+
     try:
-        chat_completion(
-            mem.llm_base_url,
-            mem.llm_model,
-            [{"role": "user", "content": "ping"}],
-            timeout=3.0,
-            api_key=mem.llm_api_key,
-        )
+        with purpose("ping"):
+            chat_completion(
+                mem.llm_base_url,
+                mem.llm_model,
+                [{"role": "user", "content": "ping"}],
+                timeout=3.0,
+                api_key=mem.llm_api_key,
+            )
         return True
     except LLMUnavailable as e:
         return not e.transient

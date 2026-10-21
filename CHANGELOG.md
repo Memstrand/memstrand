@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0] — unreleased
 
+### Added (backfill)
+
+- `memstrand hook backfill`: distill existing Claude Code transcripts from
+  disk — chunked (one extraction call per `--chunk` turns), oldest first,
+  skips subagent transcripts and live sessions, resumable, and shares
+  progress with the live Stop hook. `--dry-run`, `--project`, `--since`,
+  `--limit`.
+- **Token accounting.** Every LLM call records the usage the endpoint
+  reports to `{MEMSTRAND_HOME}/llm_usage.jsonl`, tagged by purpose
+  (extract / trust / judge / answer / ping) and session; `memstrand usage`
+  summarizes it, distillation reports include `usage`, and backfill prints
+  tokens per session and per run.
+- Backfill batches: `--limit N` takes the next N sessions with unprocessed
+  turns; `--min-turns` logs small sessions without distilling them (and
+  marks them distilled so consolidation doesn't spend tokens on them
+  later — REST `POST /api/sessions/{id}/distilled`). Turns keep their
+  original transcript timestamps (`log_turn(ts=...)`, REST `ts`).
+- `memstrand session <id>` and `memstrand search-sessions <query>` (REST
+  `GET /api/sessions/{id}/turns`, `GET /api/turns/search`): read back and
+  full-text search the raw logged conversation behind memories;
+  `memstrand show` prints a memory's source session. Owner-facing, not
+  exposed via MCP.
+- Extraction keeps only durable knowledge (decisions and why, setup,
+  root causes and fixes, conventions, preferences) and skips one-off
+  events like specific job IDs or step-by-step edits.
+- Attribution no longer counts the program being run in a Bash command
+  (`~/.venv/bin/python3 x.py`) as a touched path, and git-root detection
+  no longer follows symlinks (a venv's python linked into /opt/homebrew
+  was attributing work to Homebrew's repo).
+- A synchronous `Memory.improve()` no longer holds the store-wide lock for
+  the whole distillation (minutes of LLM calls) — only the distillation
+  lock — so a shared daemon keeps serving recall and context requests.
+
 Scoping v2, phase 1 — see [docs/design/scoping-v2.md](docs/design/scoping-v2.md).
 
 ### Changed
