@@ -1,0 +1,43 @@
+CHANGELOG.md
+  s_cc0c7560faa1c4::t_be547060158856 16-27
+docs/cli.md
+  s_cc0c7560faa1c4::t_07b4475d9241e3 28-29,91-95,119
+docs/integrations.md
+  s_cc0c7560faa1c4::t_044688d46dc47a 199-214
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_14eb3ad30d6b90 504-532
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_ae5abe4f5969b6 252-253,507-545,912-924
+src/memstrand/client.py
+  s_cc0c7560faa1c4::t_83ec5d757fffb7 345-356
+src/memstrand/hooks.py
+  s_cc0c7560faa1c4::t_5c0ed2b68fce64 143-146,149-152,154-156,160-177
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_8ec4147ade475b 58-65
+src/memstrand/scopes.py
+  s_cc0c7560faa1c4::t_2616bafd1058b5 65-68,70-71
+src/memstrand/server.py
+  s_cc0c7560faa1c4::t_a68554ed3f00d4 601-621,1063-1064
+src/memstrand/stores/base.py
+  s_cc0c7560faa1c4::t_bd9c79b79b59fc 140-143
+src/memstrand/stores/sqlite.py
+  s_cc0c7560faa1c4::t_a129eac30fb62f 18,68-84,124,134-138,169-170,173-229
+tests/test_sessions_fetch.py
+  s_cc0c7560faa1c4::t_c7e002880ae69b 1-148
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "73bf1f67b8d83ab98c8c4fae301cff292ef9803c",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
