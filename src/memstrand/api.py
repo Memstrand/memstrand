@@ -524,11 +524,17 @@ class Memory:
                 turns = turns[:limit]
             return {"session_id": matches[0], "turns": turns}
 
-    def mark_distilled(self, session_id: str) -> int:
+    def mark_distilled(self, session_id: str, reset: bool = False) -> int:
         """Mark every turn logged so far in `session_id` as distilled without
         running the LLM (e.g. a backfilled session too small to be worth
-        it), so consolidation won't distill it later. Returns the watermark."""
+        it), so consolidation won't distill it later. `reset=True` does the
+        opposite: rewinds the watermark to 0 so the whole session is
+        distilled again (re-learning identical content is a no-op merge).
+        Returns the new watermark."""
         with self._lock:
+            if reset:
+                self.sessions.mark_distilled(session_id, 0)
+                return 0
             turns = self.sessions.get_session(session_id)
             last = max((t["id"] for t in turns), default=0)
             if last:

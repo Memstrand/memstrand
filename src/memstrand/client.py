@@ -350,8 +350,8 @@ class RemoteMemory:
             raise KeyError(f"no such session: {ref}")
         return result
 
-    def mark_distilled(self, session_id: str) -> int:
-        result = self._request("POST", f"/api/sessions/{session_id}/distilled")
+    def mark_distilled(self, session_id: str, reset: bool = False) -> int:
+        result = self._request("POST", f"/api/sessions/{session_id}/distilled", json={"reset": reset})
         return int(result.get("last_turn_id", 0)) if result else 0
 
     def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:

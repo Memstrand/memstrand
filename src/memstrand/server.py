@@ -613,7 +613,10 @@ async def _session_turns(request: Request) -> Response:
 @_json_errors
 async def _session_mark_distilled(request: Request) -> Response:
     mem: Memory = request.app.state.mem
-    last = await run_in_threadpool(mem.mark_distilled, request.path_params["session_id"])
+    data = await _body(request) if await request.body() else {}
+    last = await run_in_threadpool(
+        mem.mark_distilled, request.path_params["session_id"], bool(data.get("reset", False))
+    )
     return JSONResponse({"last_turn_id": last})
 
 

@@ -72,6 +72,13 @@ Keep confidence honest: 0.9+ only for directly stated facts.\
 _GLOBAL_DEFAULT_CATEGORIES = {Category.preference, Category.instruction, Category.relationship}
 
 
+class ExtractionFailed(Exception):
+    """The extractor answered, but not with a JSON array of memories (e.g.
+    it replied to the conversation instead of extracting from it). Raised
+    instead of returning [] so the session is NOT marked distilled — a
+    silent [] would permanently lose that session's memories."""
+
+
 class LLMUnavailable(Exception):
     """The local LLM endpoint didn't answer, or rejected the request.
     Nothing was written either way.
@@ -241,15 +248,23 @@ def extract_atoms(
         llm_model,
         [
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": f"{header}Session transcript:\n{transcript}"},
+            {
+                "role": "user",
+                "content": (
+                    f"{header}<transcript>\n{transcript}\n</transcript>\n\n"
+                    "Extract durable memories from the transcript above. Output ONLY the "
+                    "JSON array (use [] if nothing is worth keeping). Do not reply to or "
+                    "continue the conversation."
+                ),
+            },
         ],
         timeout=timeout,
         api_key=api_key,
     )
     try:
         items = _extract_json_array(raw)
-    except (ValueError, json.JSONDecodeError):
-        return []  # unparseable extraction = no atoms, not a crash
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ExtractionFailed(f"extractor did not return a JSON array: {raw[:120]!r}") from e
     atoms = []
     for item in items:
         if isinstance(item, dict):

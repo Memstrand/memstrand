@@ -331,7 +331,15 @@ def _cmd_log_turn(args) -> int:
 
 def _cmd_improve(args) -> int:
     with _memory_session() as mem:
-        report = mem.improve(session_ids=args.sessions, background=args.background)
+        sessions = args.sessions
+        if args.redo:
+            if not sessions:
+                raise _CliError("--redo needs at least one --session")
+            # full ids (accepts Claude Code UUIDs / unique prefixes), then rewind
+            sessions = [mem.session_turns(ref, limit=0)["session_id"] for ref in sessions]
+            for sid in sessions:
+                mem.mark_distilled(sid, reset=True)
+        report = mem.improve(session_ids=sessions, background=args.background)
         print(json.dumps(report, indent=2))
     return 0
 
@@ -919,7 +927,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_log_turn)
 
     p = sub.add_parser("improve", help="distill raw sessions into typed memory")
-    p.add_argument("--session", dest="sessions", action="append", default=None, help="repeatable")
+    p.add_argument("--session", dest="sessions", action="append", default=None,
+                   help="repeatable; a session id, Claude Code UUID, or unique prefix with --redo")
+    p.add_argument("--redo", action="store_true",
+                   help="re-distill the given sessions from their first turn (spends LLM tokens)")
     p.add_argument("--background", action="store_true")
     p.set_defaults(func=_cmd_improve)
 

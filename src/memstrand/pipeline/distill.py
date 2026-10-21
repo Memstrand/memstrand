@@ -374,6 +374,39 @@ def _enforce_global_trust_boundary(
     return candidates
 
 
+MAX_EXTRACTION_FAILURES = 3
+
+
+def _failure_key(session_id: str) -> str:
+    return f"extract_failures:{session_id}"
+
+
+def _note_extraction_failure(mem: Memory, session_id: str, last_turn_id: int, report: dict) -> None:
+    """Count consecutive extraction failures for a session. After
+    MAX_EXTRACTION_FAILURES the turns are marked distilled anyway, so a
+    session the extractor keeps choking on can't burn LLM tokens on every
+    consolidation run forever (its raw turns stay searchable)."""
+    get_meta = getattr(mem.sessions, "get_meta", None)
+    set_meta = getattr(mem.sessions, "set_meta", None)
+    if get_meta is None or set_meta is None:
+        return
+    failures = int(get_meta(_failure_key(session_id)) or 0) + 1
+    if failures >= MAX_EXTRACTION_FAILURES:
+        mem.sessions.mark_distilled(session_id, last_turn_id)
+        set_meta(_failure_key(session_id), "0")
+        report["errors"].append(
+            {"session": session_id, "error": f"giving up after {failures} failed extractions; turns kept"}
+        )
+    else:
+        set_meta(_failure_key(session_id), str(failures))
+
+
+def _clear_extraction_failures(mem: Memory, session_id: str) -> None:
+    get_meta = getattr(mem.sessions, "get_meta", None)
+    if get_meta is not None and get_meta(_failure_key(session_id)) not in (None, "0"):
+        mem.sessions.set_meta(_failure_key(session_id), "0")
+
+
 def _distill_one_session(mem: Memory, session_id: str) -> dict:
     report: dict = {
         "session": session_id, "atoms": 0, "edges": 0, "contradictions": 0,
@@ -403,7 +436,9 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
     except Exception as e:  # noqa: BLE001 - fail closed: no promotion, session retried
         report["errors"].append({"session": session_id, "error": str(e)})
+        _note_extraction_failure(mem, session_id, max(t["id"] for t in turns), report)
         return report  # don't mark distilled: a later run retries these same turns
+    _clear_extraction_failures(mem, session_id)
 
     # Deep-review fix: never trust the extractor's own "global" scope
     # label — corroborate it against a user-turns-only extraction pass
