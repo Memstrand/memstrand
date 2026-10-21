@@ -12,6 +12,7 @@ effective values for the current environment.
 | `MEMSTRAND_LLM_BASE_URL` | `http://localhost:47811/v1` (placeholder — point it at your actual server: Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`, llama.cpp `--port 47811`) | OpenAI-compatible endpoint for `improve()` distillation, `grounded_answer()`, and the `/v1` proxy's upstream |
 | `MEMSTRAND_LLM_MODEL` | `local` | model name sent to the LLM endpoint |
 | `MEMSTRAND_LLM_API_KEY` | `local` | bearer key sent to the LLM endpoint (most local servers ignore it) |
+| `MEMSTRAND_LLM_API_KEY_COMMAND` | *(unset)* | shell command whose stdout is the LLM bearer key, used instead of `MEMSTRAND_LLM_API_KEY` — for gateways with short-lived tokens. Re-run at most once a minute, so a long-running daemon picks up refreshed tokens; if it fails, the last good token (else `MEMSTRAND_LLM_API_KEY`) is used. Also applies to `MEMSTRAND_EMBED_BACKEND=openai` |
 | `MEMSTRAND_EMBED_BACKEND` | `fastembed` | `fastembed` (local ONNX, downloads `BAAI/bge-small-en-v1.5` on first use) or `openai` (any OpenAI-compatible `/embeddings` endpoint) |
 | `MEMSTRAND_EMBED_MODEL` | *(fastembed's built-in default)* | required when `MEMSTRAND_EMBED_BACKEND=openai` |
 | `MEMSTRAND_EMBED_BASE_URL` | falls back to `MEMSTRAND_LLM_BASE_URL` | endpoint used when `MEMSTRAND_EMBED_BACKEND=openai` |
@@ -37,6 +38,10 @@ Everything lives under `MEMSTRAND_HOME` (default `~/.memstrand`):
   at a real server).
 - `kuzu/` — only used when `MEMSTRAND_GRAPH_BACKEND=kuzu`.
 - `backups/` — timestamped `memstrand backup` output.
+- `scope_cache.json` — repo root → scope key cache for the hooks and
+  `--repo <path>` (invalidated when the repo's git config changes).
+- `backups/pre-scoping-v2-*.jsonl` — the automatic backup written before
+  the one-time scoping-v2 migration re-keys a pre-0.3 store.
 - `hook.log` — written by the Claude Code hooks when they can't reach/
   authenticate with a running daemon (see [docs/cli.md](cli.md#security-notes)).
 

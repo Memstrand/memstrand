@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .config import Settings
 
 
@@ -71,10 +73,15 @@ class FastEmbedder:
 class OpenAIEmbedder:
     """OpenAI-compatible `/embeddings` endpoint."""
 
-    def __init__(self, base_url: str, model: str, api_key: str = "local"):
+    def __init__(self, base_url: str, model: str, api_key: str | Callable[[], str] = "local"):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.api_key = api_key
+        # a callable is re-invoked per request (MEMSTRAND_LLM_API_KEY_COMMAND)
+        self._api_key = api_key
+
+    @property
+    def api_key(self) -> str:
+        return self._api_key() if callable(self._api_key) else self._api_key
 
     def embed(self, texts):
         texts = list(texts)
@@ -111,8 +118,12 @@ def make_embedder(settings: Settings):
             raise ValueError(
                 "MEMSTRAND_EMBED_MODEL is required when MEMSTRAND_EMBED_BACKEND=openai"
             )
+        from .config import resolve_llm_api_key
+
         return OpenAIEmbedder(
-            settings.embed_base_url or settings.llm_base_url, settings.embed_model, settings.llm_api_key
+            settings.embed_base_url or settings.llm_base_url,
+            settings.embed_model,
+            lambda: resolve_llm_api_key(settings),
         )
     return FastEmbedder(settings.embed_model)
 

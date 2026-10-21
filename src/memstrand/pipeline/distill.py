@@ -3,16 +3,25 @@
 Cognee's improve() pattern, local-first:
   1. extract candidate atoms from raw session turns (only the turns after
      the session's last distilled turn id — incremental, not a full replay)
-  2. dedup by scope-aware content hash (identical re-add = no-op)
+  2. dedup by content hash: identical content already in the target
+     scope = no-op; already stored under OTHER scopes = widen its scope
+     set (scoping v2: one atom, many scopes)
   3. conflict check: genuinely contradictory atoms become
      `contradicts` EDGES — additive, both sides stay readable
   4. promote survivors into the graph + vector + keyword stores, scoped
-     global (task_id=None) or task (task_id=session's task) per the
-     extractor's scope call
+     global or to the session's task per the extractor's scope call
+
+Supersedes across scopes: a `supersedes` edge hides its target
+everywhere, so a correction only supersedes an atom whose scopes it fully
+covers. Otherwise the correction is scoped narrower than the old fact: the
+overlapping scopes are moved off the old atom (it stays current in its
+other scopes) and the two are linked by a `contradicts` edge instead. A
+task-scoped correction never retires a global fact (it can't cover
+"everywhere"); it's linked as a contradiction, so both surface together.
 
 Runs async at session end / pre-compact hook, or as part of
 `Memory.consolidate()`. Never blocks the chat loop when `background=True`.
-Idempotent: scope-aware content-hash ids make a crashed run safe to re-run,
+Idempotent: content-hash ids make a crashed run safe to re-run,
 and `mark_distilled` means a clean run never re-sends the same turns twice.
 
 Never-raises contract: `_distill_one_session` wraps EACH candidate's
@@ -52,7 +61,7 @@ import threading
 import unicodedata
 from typing import TYPE_CHECKING
 
-from ..schema import Category, MemoryEdge, Provenance, RelationType
+from ..schema import GLOBAL_SCOPE, Category, MemoryEdge, Provenance, RelationType
 from .extract import _extract_json_array, chat_completion, extract_atoms
 
 if TYPE_CHECKING:
@@ -116,11 +125,88 @@ def _judge(mem: Memory, candidate: dict, existing: list[dict]) -> dict:
     }
 
 
-def _target_task_id(candidate: dict, session_task_id: str | None) -> str | None:
+def _target_scopes(
+    candidate: dict, session_task_id: str | None, labels: dict[str, str] | None = None
+) -> list[str]:
     """Durable facts about the user (preference/instruction/relationship,
     or anything the extractor explicitly scoped "global") are stored
-    global; everything else inherits the session's task."""
-    return None if candidate.get("scope") == "global" else session_task_id
+    global. A list-valued scope names repos from the session's candidate
+    list (`labels`: label -> scope key); names not on that list are dropped
+    — the model can't invent a scope. Everything else (and a list that
+    filters down to nothing) inherits the session's own scope, or global
+    when the session has none."""
+    scope = candidate.get("scope")
+    if scope == "global":
+        return [GLOBAL_SCOPE]
+    if scope == "ambiguous":
+        # never global while undecided: the repos it was torn between, else
+        # the session's own scope (falls through below)
+        scope = candidate.get("candidates") or []
+    if isinstance(scope, list) and labels:
+        keys = [labels[n] for n in scope if n in labels]
+        if keys:
+            return sorted(set(keys))
+    return [session_task_id] if session_task_id else [GLOBAL_SCOPE]
+
+
+def _queue_review_if_needed(mem: Memory, cand: dict, atom, labels: dict[str, str] | None = None) -> bool:
+    if cand.get("unverified_global"):
+        return mem.queue_scope_review(
+            atom.id, "unverified_global",
+            "claimed to apply everywhere, but couldn't be confirmed from your own words",
+        )
+    if cand.get("scope") == "ambiguous":
+        return mem.queue_scope_review(
+            atom.id, "ambiguous", "unclear whether this applies everywhere or only to these repos",
+            # only names from the session's own candidate list, as scope keys
+            sorted({labels[n] for n in cand.get("candidates") or [] if labels and n in labels}),
+        )
+    return False
+
+
+def _session_candidates(turns: list[dict]) -> tuple[str | None, list[str]]:
+    """(primary scope, ordered candidate scope keys): the session's own
+    scope first, then every scope any turn touched."""
+    primary = next((t.get("task_id") for t in turns if t.get("task_id")), None)
+    keys: list[str] = [primary] if primary else []
+    for t in turns:
+        for key in t.get("scopes") or []:
+            if key and key not in keys:
+                keys.append(key)
+    return primary, keys
+
+
+def _scope_labels(keys: list[str]) -> dict[str, str]:
+    """label -> key. Labels are short names (`memstrand`, `.claude`), falling
+    back to the full key wherever two keys share a short name."""
+    from ..scopes import short_name
+
+    counts: dict[str, int] = {}
+    for key in keys:
+        counts[short_name(key)] = counts.get(short_name(key), 0) + 1
+    return {(short_name(k) if counts[short_name(k)] == 1 else k): k for k in keys}
+
+
+def _replace_edge(mem: Memory, new_atom, target_id: str, reason: str) -> RelationType:
+    """Link a correction to the atom it replaces, respecting scopes (see
+    module docstring). Returns the relation actually written."""
+    old = mem.graph.get_atom(target_id)
+    new_scopes = set(new_atom.scopes)
+    if old is None or GLOBAL_SCOPE in new_scopes or set(old.scopes) <= new_scopes:
+        relation = RelationType.supersedes
+    else:
+        relation = RelationType.contradicts
+        overlap = (set(old.scopes) & new_scopes) - {GLOBAL_SCOPE}
+        keeps = set(old.scopes) - overlap
+        if overlap and keeps:
+            mem.set_scopes(old.id, remove=sorted(overlap), resolve_review=False)
+        where = ", ".join(sorted(new_scopes))
+        still = ", ".join(sorted(s or "global" for s in keeps))
+        reason = f"{reason} (superseded in {where}; still current in {still})"
+    mem.graph.add_edge(
+        MemoryEdge(source_id=new_atom.id, target_id=target_id, relation=relation, reason=reason)
+    )
+    return relation
 
 
 GLOBAL_TRUST_CATEGORIES = {Category.instruction, Category.preference, Category.relationship}
@@ -281,22 +367,36 @@ def _enforce_global_trust_boundary(
         if not trusted:
             cand["scope"] = "task"
             cand["provenance"] = Provenance.inferred
+            cand["unverified_global"] = True  # queued for the user's call (scoping v2 §4)
     return candidates
 
 
 def _distill_one_session(mem: Memory, session_id: str) -> dict:
     report: dict = {
         "session": session_id, "atoms": 0, "edges": 0, "contradictions": 0,
-        "skipped_dedup": 0, "skipped_none": 0, "errors": [],
+        "skipped_dedup": 0, "skipped_none": 0, "scope_widened": 0, "scope_reviews": 0, "errors": [],
     }
     after_id = mem.sessions.last_distilled_turn_id(session_id)
     turns = mem.sessions.get_session(session_id, after_id=after_id)
     if not turns:
         return report
-    session_task_id = next((t.get("task_id") for t in turns if t.get("task_id")), None)
+    session_task_id, candidate_keys = _session_candidates(turns)
+    session_agent = next((t.get("agent") for t in turns if t.get("agent")), None)
+    labels = _scope_labels(candidate_keys) if len(candidate_keys) > 1 else {}
 
     try:
-        candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
+        if labels:
+            label_of = {key: label for label, key in labels.items()}
+            annotated = [
+                {**t, "touched": [label_of[k] for k in t.get("scopes") or [] if k in label_of]}
+                for t in turns
+            ]
+            candidates = extract_atoms(
+                annotated, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key,
+                scope_candidates=[label_of[k] for k in candidate_keys],
+            )
+        else:
+            candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
     except Exception as e:  # noqa: BLE001 - fail closed: no promotion, session retried
         report["errors"].append({"session": session_id, "error": str(e)})
         return report  # don't mark distilled: a later run retries these same turns
@@ -316,14 +416,19 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
         # batch, and must not be silently counted as processed either —
         # see the "all_ok" / mark_distilled gating below.
         try:
-            target_task_id = _target_task_id(cand, session_task_id)
-            atom_id = mem._atom_id(cand["content"], target_task_id, None)
-            if mem.vectors.exists(atom_id):
-                report["skipped_dedup"] += 1
+            target_scopes = _target_scopes(cand, session_task_id, labels)
+            atom_id = mem._atom_id(cand["content"])
+            existing = mem.graph.get_atom(atom_id) if mem.vectors.exists(atom_id) else None
+            if existing is not None:
+                if set(target_scopes) <= set(existing.scopes):
+                    report["skipped_dedup"] += 1
+                else:
+                    mem.set_scopes(atom_id, add=target_scopes, resolve_review=False)
+                    report["scope_widened"] += 1
                 continue
             similar = [
                 h
-                for h in mem.recall(cand["content"], task_id=target_task_id, limit=5, track=False)
+                for h in mem.recall(cand["content"], scopes=target_scopes, limit=5, track=False)
                 if h["similarity"] is not None and h["similarity"] >= 0.6 and h["id"] != atom_id
             ]
             verdict = _judge(mem, cand, similar)
@@ -349,17 +454,17 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 provenance=provenance,
                 confidence=cand["confidence"],
                 session_id=session_id,
-                task_id=target_task_id,
+                scopes=target_scopes,
+                agent=session_agent,
             )
             report["atoms"] += 1
+            if _queue_review_if_needed(mem, cand, atom, labels):
+                report["scope_reviews"] += 1
             if verdict["action"] in ("update", "delete") and target:
-                mem.graph.add_edge(
-                    MemoryEdge(
-                        source_id=atom.id, target_id=target, relation=RelationType.supersedes,
-                        reason=verdict["reason"] or "session distillation",
-                    )
-                )
+                relation = _replace_edge(mem, atom, target, verdict["reason"] or "session distillation")
                 report["edges"] += 1
+                if relation == RelationType.contradicts:
+                    report["contradictions"] += 1
             elif verdict["relation"] == "contradicts" and target:
                 mem.graph.add_edge(
                     MemoryEdge(
@@ -395,10 +500,13 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
 def _merge_reports(session_ids: list[str], results: list[dict]) -> dict:
     merged: dict = {
         "sessions": session_ids, "atoms": 0, "edges": 0, "contradictions": 0,
-        "skipped_dedup": 0, "skipped_none": 0, "errors": [],
+        "skipped_dedup": 0, "skipped_none": 0, "scope_widened": 0, "scope_reviews": 0, "errors": [],
     }
     for r in results:
-        for key in ("atoms", "edges", "contradictions", "skipped_dedup", "skipped_none"):
+        for key in (
+            "atoms", "edges", "contradictions", "skipped_dedup", "skipped_none",
+            "scope_widened", "scope_reviews",
+        ):
             merged[key] += r[key]
         merged["errors"].extend(r["errors"])
     return merged

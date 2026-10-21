@@ -150,9 +150,33 @@ This wires:
   already running (a cold local `Memory()` is too slow for a hook that runs
   before every prompt) — so run `memstrand serve` first.
 
-Both hook subcommands scope memories by the enclosing git repo's directory
-name by default (`--task-from cwd`); use `--task-from none` for no task
-scoping, or `--task-from env` to read `MEMSTRAND_TASK` instead.
+Both hook subcommands scope memories by the cwd's repo
+(`--task-from auto`, the default, or `cwd`): its normalized git remote URL (e.g.
+`github.com/org/repo`, the same for every clone on every machine), or
+`local:<hostname>:<path>` when there's no remote. Use `--task-from none`
+for no scoping, or `--task-from env` to read `MEMSTRAND_TASK` instead.
+With `auto`, the Stop/PreCompact hook also records which *other* repos each
+turn touched — files Claude read/edited/searched, `cd` targets, and paths
+you mention in prompts (only paths inside git repos count) — and
+distillation can file a fact under those repos. So asking Claude in
+`~/.claude` to "read ~/projects/memstrand" files what it learns about
+memstrand under memstrand.
+
+When memstrand can't tell where a memory belongs — the extractor marks it
+ambiguous, or an "always do X" it couldn't confirm came from you — it's
+saved narrowly (never global) and queued. The `UserPromptSubmit` hook then
+adds a short "scope check" asking Claude to put the question to you (at
+most 3 at a time, each once per session, and it stops asking after 5
+sessions) and to record your answer with `memstrand scope <id> …`. You can
+also run `memstrand review` yourself.
+
+The context hook also reads paths in your prompt: asking from `~/.claude`
+to "read ~/projects/memstrand …" injects memstrand's memories alongside
+`.claude`'s and the global ones. Every memory records who wrote it
+(`claude-code@<host>`, `cli@<host>`, `openai-proxy@<host>`, `mcp@<host>`);
+see it with `memstrand show <id>` or filter with `memstrand list --agent`.
+A memory can belong to several repos at once — see `memstrand scope` in
+[docs/cli.md](cli.md#scopes).
 
 If a daemon is running but rejects the hook's `MEMSTRAND_TOKEN` (missing
 or wrong), the hook fails fast with a "set MEMSTRAND_TOKEN" message rather
@@ -208,6 +232,8 @@ Per-request headers, if you need to override behavior from a client:
   request.
 - `x-memstrand-task: <id>` — scope this conversation to a task (overrides
   `MEMSTRAND_TASK`).
+- `x-memstrand-scopes: <a>,<b>` — additional scopes whose memories are
+  injected (comma-separated scope keys).
 - `x-memstrand-session: <id>` — override the session id used for logging
   (defaults to `proxy-<today's date>`).
 

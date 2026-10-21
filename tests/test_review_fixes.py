@@ -258,10 +258,13 @@ def test_ingest_same_path_different_task_ids_not_silently_skipped(tmp_path):
     assert r2["files_ingested"] == 1
     assert r2["files_unchanged"] == 0
 
+    # Scoping v2: identical chunks in two tasks are ONE atom carrying both
+    # scopes (content-only ids), so each task still sees its copy.
     atoms_a = m.list(task_id="task-A")
     atoms_b = m.list(task_id="task-B")
     assert atoms_a and atoms_b
-    assert {a["id"] for a in atoms_a}.isdisjoint({b["id"] for b in atoms_b})
+    assert {a["id"] for a in atoms_a} == {b["id"] for b in atoms_b}
+    assert all({"task-A", "task-B"} <= set(a["scopes"]) for a in atoms_a)
 
 
 def test_ingest_forget_source_is_scope_aware_across_tasks(tmp_path):

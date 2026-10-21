@@ -124,7 +124,7 @@ def test_improve_as_first_operation_does_not_crash(tmp_path, monkeypatch):
     object has no attribute 'exists'` the first time something (here,
     `pipeline.distill`'s dedup check) calls `mem.vectors.exists(...)`."""
     mem = _make_mem(tmp_path)
-    atom_id = mem._atom_id("brand new content nobody embedded yet", None, None)
+    atom_id = mem._atom_id("brand new content nobody embedded yet")
     # This used to crash when `mem.vectors` was still `None` pre-first-embed.
     assert mem.vectors.exists(atom_id) is False
     assert mem.vectors.search([0.0] * 32, query=ScopedQuery(text="x")) == []

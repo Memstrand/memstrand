@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from ..config import ensure_private_dir, secure_file
 from ..ranking import keyword_strength
-from ..schema import MemoryAtom, ScopedQuery
+from ..schema import MemoryAtom, ScopedQuery, encode_scopes
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
@@ -34,10 +34,18 @@ def _sanitize_query(text: str) -> str:
 
 
 def _scope_clause(query: ScopedQuery) -> tuple[str, list]:
-    """Scoped query sees its own scope PLUS globals: task_id in
-    {query.task_id or "", ""} — matching the vector store's rule exactly."""
-    clauses = ["(task_id = ? OR task_id = '')", "(host = ? OR host = '')"]
-    params: list = [query.task_id or "", query.host or ""]
+    """Scoped query sees its own scopes PLUS globals — matching the vector
+    store's rule exactly. The `task_id` column holds the encoded scope set
+    (`schema.encode_scopes`: "||" = global member); legacy plain values
+    ("" = global, "x" = one task) match too, until rewritten."""
+    scope_terms = ["task_id = ''", "instr(task_id, '||') > 0"]
+    params: list = []
+    for scope in query.scopes:
+        scope_terms.append("task_id = ?")
+        scope_terms.append("instr(task_id, ?) > 0")
+        params.extend([scope, f"|{scope}|"])
+    clauses = [f"({' OR '.join(scope_terms)})", "(host = ? OR host = '')"]
+    params.append(query.host or "")
     if query.categories:
         placeholders = ", ".join("?" for _ in query.categories)
         clauses.append(f"(category IN ({placeholders}))")
@@ -95,7 +103,7 @@ class SqliteKeywordIndex:
                 (
                     atom.content,
                     atom.id,
-                    atom.task_id or "",
+                    encode_scopes(atom.scopes),
                     atom.host or "",
                     atom.category.value,
                     atom.expires_at.timestamp() if atom.expires_at else 0.0,

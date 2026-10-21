@@ -15,18 +15,30 @@ import threading
 from datetime import UTC, datetime
 
 from ..config import ensure_private_dir
-from ..schema import Category, MemoryAtom, MemoryEdge, Provenance, RelationType
+from ..schema import (
+    Category,
+    MemoryAtom,
+    MemoryEdge,
+    Provenance,
+    RelationType,
+    decode_scopes,
+    encode_scopes,
+)
 from .base import sort_hop_results
 
 
 def _atom_filter_clause(
-    category: str | None, task_id: str | None, host: str | None, alias: str = "a"
+    category: str | None, task_id: str | None, host: str | None, alias: str = "a",
+    agent: str | None = None,
 ) -> tuple[str, dict]:
     """Shared WHERE-clause builder for list_atoms/count_atoms so the two
-    can never drift out of sync on filter semantics (fix #10)."""
+    can never drift out of sync on filter semantics (fix #10).
+
+    `task_id` filters by scope MEMBERSHIP ("" = atoms in the global scope);
+    the column holds the encoded scope set (see graph_sqlite.ATOM_COLUMNS)."""
     clauses: list[str] = []
     params: dict = {}
-    for col, value in (("category", category), ("task_id", task_id), ("host", host)):
+    for col, value in (("category", category), ("host", host), ("agent", agent)):
         if value is None:
             continue
         if value == "":
@@ -34,6 +46,14 @@ def _atom_filter_clause(
         else:
             clauses.append(f"{alias}.{col} = ${col}")
             params[col] = value
+    if task_id is not None:
+        col = f"{alias}.task_id"
+        if task_id == "":
+            clauses.append(f"({col} IS NULL OR {col} = '' OR contains({col}, '||'))")
+        else:
+            clauses.append(f"({col} = $task_id OR contains({col}, $task_member))")
+            params["task_id"] = task_id
+            params["task_member"] = f"|{task_id}|"
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, params
 
@@ -69,7 +89,7 @@ def _row_to_atom(row: tuple) -> MemoryAtom:
         provenance=Provenance(prov),
         confidence=conf,
         session_id=sess or None,
-        task_id=task or None,
+        scopes=decode_scopes(task),
         host=host or None,
         agent=agent or None,
         created_at=created_at,
@@ -162,7 +182,7 @@ class KuzuGraphStore:
                     "id": atom.id, "cat": atom.category.value,
                     "content": atom.content, "prov": atom.provenance.value,
                     "conf": atom.confidence,
-                    "sess": atom.session_id or "", "task": atom.task_id or "",
+                    "sess": atom.session_id or "", "task": encode_scopes(atom.scopes),
                     "host": atom.host or "", "agent": atom.agent or "",
                     "created": atom.created_at.isoformat(),
                     "expires": atom.expires_at.isoformat() if atom.expires_at else "",
@@ -248,8 +268,9 @@ class KuzuGraphStore:
         host: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        agent: str | None = None,
     ) -> list[MemoryAtom]:
-        where, params = _atom_filter_clause(category, task_id, host)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
         with self._lock:
             rows = self.conn.execute(
                 f"""MATCH (a:Atom) {where}
@@ -269,8 +290,9 @@ class KuzuGraphStore:
         category: str | None = None,
         task_id: str | None = None,
         host: str | None = None,
+        agent: str | None = None,
     ) -> int:
-        where, params = _atom_filter_clause(category, task_id, host)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
         with self._lock:
             row = self.conn.execute(f"MATCH (a:Atom) {where} RETURN count(*)", params).get_next()
         return int(row[0]) if row else 0

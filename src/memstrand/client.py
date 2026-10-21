@@ -57,6 +57,10 @@ def normalize_atom(atom: MemoryAtom | dict) -> dict:
     return Memory.atom_to_dict(atom)
 
 
+# Sentinel mirroring `api._ALL_SCOPES` (not imported: `.api` is heavy).
+_ALL_SCOPES: Any = object()
+
+
 def _enum_value(v):
     return v.value if isinstance(v, (Category, Provenance)) else v
 
@@ -135,8 +139,8 @@ class RemoteMemory:
         source: str | None = None,
         source_ref: str | None = None,
         agent: str | None = None,
+        scopes: list[str] | None = None,
     ) -> dict:
-        # `agent` has no REST field yet (see server contract) — dropped silently.
         payload = _drop_none(
             {
                 "content": content,
@@ -149,20 +153,31 @@ class RemoteMemory:
                 "ttl_days": ttl_days,
                 "source": source,
                 "source_ref": source_ref,
+                "agent": agent,
+                "scopes": scopes,
             }
         )
         return self._request("POST", "/api/remember", json=payload)
 
     def log_turn(
-        self, session_id: str, role: str, content: str, task_id: str | None = None
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        task_id: str | None = None,
+        scopes: list[str] | None = None,
+        agent: str | None = None,
     ) -> None:
         payload = _drop_none(
-            {"session_id": session_id, "role": role, "content": content, "task_id": task_id}
+            {
+                "session_id": session_id, "role": role, "content": content,
+                "task_id": task_id, "scopes": scopes, "agent": agent,
+            }
         )
         self._request("POST", "/api/turns", json=payload)
 
     def log_turns(self, turns: list[dict]) -> None:
-        """Batch form: `turns` is a list of {"session_id","role","content","task_id"?}
+        """Batch form: `turns` is a list of {"session_id","role","content","task_id"?,"scopes"?}
         dicts. Used by hooks.py so a burst of transcript turns is one request."""
         self._request("POST", "/api/turns", json={"turns": turns})
 
@@ -170,8 +185,14 @@ class RemoteMemory:
         result = self._request("DELETE", f"/api/atoms/{atom_id}", not_found_ok=True)
         return bool(result and result.get("forgot"))
 
-    def forget_source(self, source: str) -> int:
-        result = self._request("POST", "/api/forget_source", json={"source": source})
+    def forget_source(self, source: str, task_id: str | None = _ALL_SCOPES) -> int:
+        """Same contract as `Memory.forget_source`: by default delete the
+        source's atoms in every scope; passing `task_id` (None = global)
+        removes only that scope."""
+        payload: dict = {"source": source}
+        if task_id is not _ALL_SCOPES:
+            payload["scope"] = task_id or ""
+        result = self._request("POST", "/api/forget_source", json=payload)
         return result.get("forgot", 0) if result else 0
 
     def update(
@@ -198,6 +219,7 @@ class RemoteMemory:
         limit: int = 10,
         include_superseded: bool = False,
         track: bool = True,
+        scopes: list[str] | None = None,
     ) -> list[dict]:
         # `track` is a local-only internal knob (judge/consolidation callers);
         # the daemon always tracks recall side effects, so it's not sent.
@@ -210,6 +232,7 @@ class RemoteMemory:
                 "categories": [_enum_value(c) for c in categories] if categories else None,
                 "limit": limit,
                 "include_superseded": include_superseded,
+                "scopes": scopes,
             }
         )
         result = self._request("POST", "/api/recall", json=payload)
@@ -221,11 +244,14 @@ class RemoteMemory:
         task_id: str | None = None,
         host: str | None = None,
         scoped: bool = False,
+        scopes: list[str] | None = None,
     ) -> dict | None:
         """Mirrors `Memory.get`: default (scoped=False) is the owner-facing
         browse view (any atom, neighbors unfiltered). Pass scoped=True with
         task_id/host to apply the same visibility rule recall() uses."""
-        params = _drop_none({"task_id": task_id, "host": host})
+        params: dict = _drop_none({"task_id": task_id, "host": host})
+        if scopes:
+            params["scope"] = list(scopes)
         if scoped:
             params["scoped"] = "1"
         return self._request("GET", f"/api/atoms/{atom_id}", params=params, not_found_ok=True)
@@ -237,6 +263,7 @@ class RemoteMemory:
         host: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        agent: str | None = None,
     ) -> list[dict]:
         # task_id is kept even when "" (absent = all tasks, "" = global only).
         params = _drop_none(
@@ -244,6 +271,7 @@ class RemoteMemory:
                 "category": _enum_value(category),
                 "task_id": task_id,
                 "host": host,
+                "agent": agent,
                 "limit": limit,
                 "offset": offset,
             }
@@ -266,20 +294,61 @@ class RemoteMemory:
         host: str | None = None,
         limit: int = 8,
         max_chars: int = 4000,
+        scopes: list[str] | None = None,
     ) -> str:
         payload = _drop_none(
-            {"query": query, "task_id": task_id, "host": host, "limit": limit, "max_chars": max_chars}
+            {
+                "query": query, "task_id": task_id, "host": host,
+                "limit": limit, "max_chars": max_chars, "scopes": scopes,
+            }
         )
         result = self._request("POST", "/api/context", json=payload)
         return result.get("context", "") if result else ""
 
-    def grounded_answer(self, question: str, task_id: str | None = None, host: str | None = None, **_unused) -> str:
+    def grounded_answer(
+        self,
+        question: str,
+        task_id: str | None = None,
+        host: str | None = None,
+        scopes: list[str] | None = None,
+        **_unused,
+    ) -> str:
         """`**_unused` absorbs local-only `recall()` kwargs (session_id,
         categories, limit, ...) that the `/api/answer` endpoint doesn't
-        accept — only `task_id`/`host` make the trip."""
-        payload = _drop_none({"question": question, "task_id": task_id, "host": host})
+        accept — only `task_id`/`host`/`scopes` make the trip."""
+        payload = _drop_none({"question": question, "task_id": task_id, "host": host, "scopes": scopes})
         result = self._request("POST", "/api/answer", json=payload)
         return result.get("answer", "") if result else ""
+
+    # -- scope management -----------------------------------------------------------
+
+    def set_scopes(
+        self,
+        atom_id: str,
+        scopes: list[str] | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict:
+        payload = _drop_none({"set": scopes, "add": add, "remove": remove})
+        return self._request("POST", f"/api/atoms/{atom_id}/scopes", json=payload)
+
+    def confirm_scopes(self, atom_id: str) -> dict:
+        return self._request("POST", f"/api/atoms/{atom_id}/scopes", json={"keep": True})
+
+    def pending_scope_reviews(self, limit: int = 3, session_key: str | None = None) -> list[dict]:
+        if session_key:
+            result = self._request("POST", "/api/reviews", json={"limit": limit, "session": session_key})
+        else:
+            result = self._request("GET", "/api/reviews", params={"limit": limit})
+        return result.get("reviews", []) if result else []
+
+    def rename_scope(self, old: str, new: str) -> int:
+        result = self._request("POST", "/api/scopes/rename", json={"old": old, "new": new})
+        return result.get("renamed", 0) if result else 0
+
+    def scopes_summary(self) -> dict[str, int]:
+        result = self._request("GET", "/api/scopes")
+        return result.get("scopes", {}) if result else {}
 
     # -- sessions / distillation / consolidation ---------------------------------
 

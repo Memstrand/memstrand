@@ -4,7 +4,96 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — unreleased
+
+Scoping v2, phase 1 — see [docs/design/scoping-v2.md](docs/design/scoping-v2.md).
+
+### Changed
+
+- **Memories belong to a set of scopes, not one task.** `MemoryAtom.scopes`
+  replaces `task_id` (still accepted everywhere as a one-element set, and
+  readable as a legacy property). A query sees memories sharing any of its
+  scopes, plus global ones; global is the reserved member `""`.
+- **Atom ids no longer include the task** — they hash content, host, and
+  source. Remembering the same content in another scope widens the
+  existing atom's scope set instead of creating a sibling (distillation
+  reports this as `scope_widened`); a widening merge only adds scopes and
+  never downgrades the atom's provenance/category/confidence. Identical
+  text from two different source files stays two atoms.
+- **Repo identity.** The Claude Code hooks' `--task-from cwd` now scopes by
+  the repo's normalized git remote URL (`github.com/org/repo`), falling
+  back to `local:<hostname>:<path>` — no more bare, collision-prone folder
+  names.
+- **Scope-aware corrections.** Distillation only `supersedes` an atom
+  whose scopes the correction fully covers; otherwise the overlapping
+  scopes move to the correction and the two are linked by `contradicts`,
+  so a fix learned in one repo can't retire a fact that's still true in
+  another (or a global one).
+- `forget_source(..., task_id=X)` removes scope X from matching atoms and
+  only deletes an atom once its scope set is empty.
+- Export format `0.3` (atoms carry `scopes`). Importing a `0.2` export
+  re-keys its atoms; importing an atom that already exists unions scopes.
+
+### Added
+
+- **Attribution from tool calls** (scoping v2 phase 2). With the hooks'
+  new default `--task-from auto`, each logged turn records the other repos
+  it touched (Read/Edit/Write/Grep/Glob paths, `cd` targets and paths in
+  Bash, paths in your prompts; git repos only) in a new `turns.scopes`
+  column. Distillation offers those repos to the extractor as a candidate
+  list and files a fact under the repos it names; names not on the list
+  are dropped. `log_turn`/REST `/api/turns`/MCP `log_turn` accept `scopes`.
+- **Scope review queue** (scoping v2 phase 3). Memories the extractor marks
+  `"ambiguous"`, and claimed-global instructions/preferences the trust
+  boundary couldn't confirm from the user's own words, are stored narrowly
+  and queued. The `UserPromptSubmit` hook adds a "scope check" block (≤3
+  per prompt, once per session, expires after 5 sessions) asking Claude to
+  ask the user and record the answer. `memstrand review`, `scope --keep`,
+  REST `GET`/`POST /api/reviews`, MCP `scope(keep=True)`. Confirming an
+  unverified-global memory upgrades it to `validated` provenance — only on
+  a human decision, never from distillation's own scope bookkeeping.
+  Queued memory text is sanitized like `context()` output.
+- Claude Code hook transcripts are read with `errors="replace"`: one
+  non-UTF-8 byte no longer stops a session from being logged.
+- **Read-side scopes and agent attribution** (scoping v2 phase 4). The
+  context hook adds repos named by path in the prompt to the lookup; the
+  `/v1` proxy accepts `x-memstrand-scopes`. Every memory records its writer
+  (`claude-code@host`, `cli@host`, `openai-proxy@host`, `mcp@host`; turns
+  carry it too and distilled atoms inherit it); `list --agent` /
+  `GET /api/atoms?agent=` filter by it, and REST `remember` now honors
+  `agent` from the client.
+- `memstrand forget-source <source> --task/--repo X` removes just that scope
+  (REST: `{"source", "scope"}`).
+- `MEMSTRAND_LLM_API_KEY_COMMAND` refreshes never block other callers: they
+  get the cached token while one thread refreshes.
+- `memstrand scope <id>` (`--set/--add/--remove/--global`), `memstrand
+  scopes` and `scopes rename <old> <new>`; `--repo` (key, short name, or a
+  path resolved through git) on `remember`/`recall`/`list`/`context`/`answer`.
+- REST: `POST /api/atoms/{id}/scopes`, `GET /api/scopes`,
+  `POST /api/scopes/rename`, and `scopes` on remember/recall/context/answer.
+  MCP: a `scope` tool and `scopes` arguments.
+- `memstrand.scopes`: remote-URL normalization (credentials always
+  stripped), git-root resolution with a per-repo cache, short-name aliases.
+
+### Migration
+
+- On first open, a pre-0.3 store is re-keyed automatically (task-scoped
+  atoms only; global ids are unchanged), merging identical content across
+  tasks, re-pointing edges, carrying provenance history forward, and
+  reusing stored vectors (no re-embedding). A full backup is written to
+  `backups/pre-scoping-v2-<ts>.jsonl` first. Legacy rows that don't move
+  keep working as-is.
+
 ## [0.2.2] — unreleased
+
+### Added
+
+- **`MEMSTRAND_LLM_API_KEY_COMMAND`.** A shell command whose stdout is the
+  LLM bearer key (like Claude Code's `apiKeyHelper`), re-run at most once a
+  minute so a long-running daemon keeps working against gateways that mint
+  short-lived tokens. Used by distillation, `answer`, the `/v1` proxy, and
+  the `openai` embedding backend; falls back to the last good token, then
+  `MEMSTRAND_LLM_API_KEY`, if the command fails.
 
 ### Fixed
 

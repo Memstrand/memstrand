@@ -9,7 +9,7 @@
 | `ui` | open the web UI in a browser |
 | `remember <content>` | store one memory (`-` to read content from stdin) |
 | `recall <query>` | scoped hybrid recall |
-| `list` | list memories (filter by `--category`, `--task`, `--global`) |
+| `list` | list memories (filter by `--category`, `--task`, `--repo`, `--global`) |
 | `show <id>` | one memory in detail, with neighbors and history |
 | `edit <id>` | edit a memory (a changed `--content` supersedes the old atom) |
 | `forget <id>` | delete a memory |
@@ -22,12 +22,28 @@
 | `ingest <path>` | ingest a file or folder of notes (`--watch` to keep syncing) |
 | `export` / `import` | full jsonl or markdown snapshot |
 | `backup` / `restore` | timestamped backup, merge-restore |
+| `scope <id>` | show or change which repos/tasks a memory applies to |
+| `scopes` / `scopes rename <old> <new>` | known scopes with counts / re-key one scope |
+| `review` | memories waiting for you to decide their scope |
 | `stats` | atom/edge/session counts, by category and task |
 | `config` | effective configuration |
 | `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
 
 Every data-touching command talks to a running daemon if one is up,
 otherwise opens a local store directly.
+
+## Scopes
+
+A memory belongs to a *set* of scopes (see
+[design/scoping-v2.md](design/scoping-v2.md)): repo keys like
+`github.com/org/repo` (the normalized git remote), `local:<host>:<path>`
+for folders without a remote, named tasks like `notes`, and `global`. A
+query in scope X sees memories whose set contains X, plus global ones.
+
+`--repo` (repeatable where noted) accepts a full key, a short name (the
+last path segment, e.g. `memstrand` — an ambiguous short name is an error
+listing the candidates), or a filesystem path, which is resolved through
+git. `--task X` still works and means the single scope `X`.
 
 `<role>` for `log-turn` (and the REST `/api/turns` / MCP `log_turn`
 surfaces below) must be one of `user`, `assistant`, `system`, `tool`. REST
@@ -39,18 +55,22 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 - `serve`: `--host`, `--port`, `--no-scheduler` (disable the background
   consolidation scheduler)
 - `remember <content>`: `--category`, `--provenance`, `--confidence`,
-  `--task`, `--host`, `--ttl-days`, `--source`
-- `recall <query>`: `--task`, `--host`, `--limit`, `--all` (include
+  `--task`, `--repo` (repeatable), `--global` (with `--repo`: also global),
+  `--host`, `--ttl-days`, `--source`. Remembering content that already
+  exists adds the new scopes to it.
+- `recall <query>`: `--task`, `--repo` (repeatable), `--host`, `--limit`, `--all` (include
   superseded), `--json`
-- `list`: `--category`, `--task`, `--global` (only task-less memories),
+- `list`: `--category`, `--task`, `--repo` (memories in that scope),
+  `--agent` (who wrote it, e.g. `claude-code@myhost`),
+  `--global` (only memories in the global scope),
   `--limit`, `--offset`, `--json`
 - `show <id>`: `--json`
 - `edit <id>`: `--content`, `--category`, `--confidence`
 - `forget <id>`: `--yes`
 - `log-turn <session> <role> <content>`: `--task`
 - `improve`: `--session` (repeatable), `--background`
-- `answer <question>`: `--task`
-- `context [query]`: `--task`, `--limit`
+- `answer <question>`: `--task`, `--repo` (repeatable)
+- `context [query]`: `--task`, `--repo` (repeatable), `--limit`
 - `ingest <path>`: `--task`, `--force`, `--watch`, `--interval` — a missing
   `path` is an error (not a silent no-op); symlinks that resolve outside
   `path`'s own root and non-regular files (FIFOs, device files, sockets)
@@ -60,8 +80,17 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 - `backup`: `-o/--output` (defaults to `{home}/backups/memstrand-<ts>.jsonl`)
 - `restore <file>`: `--yes`
 - `stats`: `--json`
-- `hook claude-code`: `--task-from {cwd,none,env}`, `--no-improve`
-- `hook claude-code-context`: `--task-from {cwd,none,env}`, `--limit`
+- `scope <id>`: no flags prints the scope set; `--set` (replace),
+  `--add`, `--remove` (all repeatable, same values as `--repo`),
+  `--global`, `--keep` (confirm as-is). Any of these resolves a pending
+  scope review. Removing every scope is refused — use `forget`.
+- `review`: `--limit`, `--json`
+- `scopes`: `--json`; `scopes rename <old> <new>` re-keys every memory in
+  `old` (e.g. a folder name to its remote URL)
+- `hook claude-code`: `--task-from {auto,cwd,none,env}`, `--no-improve`.
+  `cwd` scopes by the cwd's repo key (remote URL, else `local:` path);
+  `auto` (default) also records per-turn touched repos for distillation
+- `hook claude-code-context`: `--task-from {auto,cwd,none,env}`, `--limit`
 - `hook print-config`: prints the Claude Code `settings.json` hooks snippet
 
 ## REST / MCP reference
@@ -70,13 +99,20 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 `POST /recall`, `GET /atoms`, `GET|PATCH|DELETE /atoms/{id}`,
 `POST /turns`, `POST /improve`, `POST /answer`, `POST /context`,
 `POST /consolidate`, `POST /ingest`, `GET /export`, `POST /import`,
-`POST /forget_source`. `GET /atoms/{id}` defaults to the unscoped owner
-view; pass `?scoped=1&task_id=..&host=..` to apply the same scope rule as
+`POST /forget_source`, `POST /atoms/{id}/scopes` (`{"set"|"add"|"remove": [...]}`),
+`GET /scopes`, `POST /scopes/rename` (`{"old","new"}`), `GET /reviews`
+(`?limit=`, read-only), `POST /reviews` (`{"limit","session"}`: each review
+returned once per session and counted as shown), and `{"keep": true}` on
+`/atoms/{id}/scopes`. `remember`,
+`recall`, `context`, and `answer` accept `scopes: [...]` alongside the
+single-scope `task_id`. `GET /atoms/{id}` defaults to the unscoped owner
+view; pass `?scoped=1&task_id=..&host=..` (or repeated `&scope=..`) to apply the same scope rule as
 `recall()`.
 
 **MCP** (`/mcp`, streamable HTTP, or stdio via `memstrand mcp`) tools:
 `remember`, `recall`, `context`, `answer`, `update`, `forget`, `log_turn`,
-`improve`, `ingest`, `stats` — plus a `memory_context` prompt and a
+`improve`, `ingest`, `stats`, `scope` (`remember`/`recall`/`context`/`answer`
+take an optional `scopes` list) — plus a `memory_context` prompt and a
 `memstrand://context` resource for standing instructions/preferences.
 `category`/`provenance` tool arguments are validated against the
 `Category`/`Provenance` enums; an invalid value is rejected with an

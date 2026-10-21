@@ -11,9 +11,9 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from .schema import MemoryAtom, MemoryEdge
+from .schema import MemoryAtom, MemoryEdge, normalize_scopes
 
-FORMAT_VERSION = "0.2"
+FORMAT_VERSION = "0.3"  # 0.3: atoms carry `scopes` (a set) and content-only ids
 
 _PAGE = 1000
 
@@ -79,7 +79,7 @@ def to_markdown(mem) -> str:
         lines.append(f"## {category}")
         lines.append("")
         for atom in sorted(by_category[category], key=lambda a: a.created_at, reverse=True):
-            scope = atom.task_id or "global"
+            scope = ", ".join(s or "global" for s in atom.scopes)
             bits = [f"scope: {scope}", f"confidence: {atom.confidence:.2f}", f"provenance: {atom.provenance.value}"]
             if atom.source:
                 bits.append(f"source: {atom.source}")
@@ -95,8 +95,15 @@ def from_jsonl(mem, text: str) -> dict:
     row already exists, so re-running the same export twice is a no-op
     the second time.
 
+    Scoping v2 (format 0.3): an incoming atom that already exists locally
+    with the same content gets the UNION of both scope sets (a merge, not
+    an overwrite). A pre-0.3 export carries single `task_id`s and
+    task-hashed ids; those are accepted as one-element scope sets and
+    re-keyed to content-only ids once the whole file is in
+    (`Memory._rekey_atoms`), merging duplicates across tasks.
+
     Atom id collisions (fix #8c): an atom id is a content-hash of
-    (content, task_id, host), so two atoms legitimately share an id only
+    (content, host), so two atoms legitimately share an id only
     when they're the same memory. If an incoming atom's id already exists
     locally with DIFFERENT content, that's not your own backup being
     restored — it's either state corruption or (worst case) a crafted
@@ -128,6 +135,7 @@ def from_jsonl(mem, text: str) -> dict:
     ledger_seen: set | None = None
     batch_atom_ids: set[str] = set()
     existing_edges: set[tuple[str, str, str]] | None = None
+    version: str | None = None
 
     for lineno, raw_line in enumerate(text.splitlines(), start=1):
         line = raw_line.strip()
@@ -137,6 +145,7 @@ def from_jsonl(mem, text: str) -> dict:
             obj = json.loads(line)
             kind = obj.get("type")
             if kind == "meta":
+                version = str(obj.get("version", ""))
                 continue
             if kind == "atom":
                 atom = MemoryAtom(**{k: v for k, v in obj.items() if k != "type"})
@@ -146,6 +155,10 @@ def from_jsonl(mem, text: str) -> dict:
                         {"line": lineno, "error": f"id collision with different content: {atom.id}"}
                     )
                     continue
+                if existing is not None:
+                    atom = atom.model_copy(
+                        update={"scopes": normalize_scopes([*existing.scopes, *atom.scopes])}
+                    )
                 embedding = mem._embed(atom.content)
                 mem.vectors.upsert(atom, embedding)
                 mem.graph.add_atom(atom)
@@ -195,7 +208,8 @@ def from_jsonl(mem, text: str) -> dict:
                 if key in turns_seen[sid]:
                     continue
                 mem.sessions.append_turn(
-                    sid, obj["role"], obj["content"], task_id=obj.get("task_id"), ts=obj.get("ts")
+                    sid, obj["role"], obj["content"], task_id=obj.get("task_id"), ts=obj.get("ts"),
+                    scopes=obj.get("scopes"), agent=obj.get("agent"),
                 )
                 turns_seen[sid].add(key)
                 report["turns"] += 1
@@ -226,4 +240,13 @@ def from_jsonl(mem, text: str) -> dict:
                 report["distill_state"] += 1
         except Exception as e:  # noqa: BLE001 - one bad line must never abort import
             report["errors"].append({"line": lineno, "error": str(e)})
+    if version is None or _version_tuple(version) < (0, 3):
+        report["rekeyed"] = mem._rekey_atoms()
     return report
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(p) for p in version.split("."))
+    except ValueError:
+        return (0,)
