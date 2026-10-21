@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.2.2] — unreleased
 
+### Added
+
+- **`MEMSTRAND_LLM_API_KEY_COMMAND`.** A shell command whose stdout is the
+  LLM bearer key (like Claude Code's `apiKeyHelper`), re-run at most once a
+  minute so a long-running daemon keeps working against gateways that mint
+  short-lived tokens. Used by distillation, `answer`, the `/v1` proxy, and
+  the `openai` embedding backend; falls back to the last good token, then
+  `MEMSTRAND_LLM_API_KEY`, if the command fails.
+
 ### Fixed
 
 - **Hermetic test suite.** `tests/conftest.py` (previously nonexistent) now

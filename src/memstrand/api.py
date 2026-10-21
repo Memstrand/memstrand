@@ -18,7 +18,7 @@ from typing import Self
 
 from . import export as export_module
 from . import ranking
-from .config import Settings, ensure_private_dir, get_settings
+from .config import Settings, ensure_private_dir, get_settings, resolve_llm_api_key
 from .embeddings import Reranker, make_embedder
 from .pipeline.consolidate import record_review
 from .pipeline.extract import LLMUnavailable, chat_completion
@@ -262,7 +262,6 @@ class Memory:
 
         self.llm_base_url = llm_base_url or self.settings.llm_base_url
         self.llm_model = llm_model or self.settings.llm_model
-        self.llm_api_key = self.settings.llm_api_key
 
         self.embedder = embedder or make_embedder(self.settings)
 
@@ -334,6 +333,11 @@ class Memory:
         self.reranker = reranker
         if self.reranker is None and self.settings.rerank_model:
             self.reranker = Reranker(self.settings.rerank_model)
+
+    @property
+    def llm_api_key(self) -> str:
+        """Resolved per use, so `MEMSTRAND_LLM_API_KEY_COMMAND` tokens stay fresh."""
+        return resolve_llm_api_key(self.settings)
 
     @classmethod
     def in_memory(cls, **kwargs) -> Memory:

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import math
 import os
+import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -91,6 +94,12 @@ class Settings:
     )
     llm_model: str = field(default_factory=lambda: os.environ.get("MEMSTRAND_LLM_MODEL", "local"))
     llm_api_key: str = field(default_factory=lambda: os.environ.get("MEMSTRAND_LLM_API_KEY", "local"))
+    # Shell command whose stdout is the LLM bearer key, re-run (with a short
+    # cache) instead of using the static `llm_api_key` -- for gateways that
+    # mint short-lived tokens. See `resolve_llm_api_key`.
+    llm_api_key_command: str | None = field(
+        default_factory=lambda: os.environ.get("MEMSTRAND_LLM_API_KEY_COMMAND") or None
+    )
     embed_backend: str = field(
         default_factory=lambda: os.environ.get("MEMSTRAND_EMBED_BACKEND", "fastembed")
     )
@@ -153,6 +162,62 @@ def get_settings() -> Settings:
     _validate_positive_finite_float("MEMSTRAND_CONSOLIDATE_HOURS", settings.consolidate_hours)
     _validate_unit_interval("MEMSTRAND_MIN_RELEVANCE", settings.min_relevance)
     return settings
+
+
+_API_KEY_CACHE_TTL = 60.0
+_api_key_cache: dict[str, tuple[str, float]] = {}
+_api_key_cache_lock = threading.Lock()  # guards the two dicts only, never held while shelling out
+_api_key_refresh_locks: dict[str, threading.Lock] = {}
+
+
+def _run_key_command(command: str) -> str | None:
+    try:
+        result = subprocess.run(  # shell=True: the command comes from the user's own env
+            command, shell=True, capture_output=True, text=True, timeout=30, check=True
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
+def resolve_llm_api_key(settings: Settings) -> str:
+    """The bearer key to send to the LLM endpoint right now.
+
+    Without `MEMSTRAND_LLM_API_KEY_COMMAND` this is just the static
+    `MEMSTRAND_LLM_API_KEY`. With it, the command's stripped stdout is used
+    and cached for `_API_KEY_CACHE_TTL` seconds, so a long-running daemon
+    keeps picking up refreshed tokens (same idea as Claude Code's
+    `apiKeyHelper`). Never raises: if the command fails, the last good
+    token is reused, else the static key -- the LLM call itself then
+    surfaces the auth error, which every caller already handles.
+
+    Refreshes are serialized per command and never block other callers:
+    while one thread runs a (possibly slow) refresh, others get the stale
+    cached token immediately. Only the very first fetch, with nothing
+    cached yet, waits for the command."""
+    command = settings.llm_api_key_command
+    if not command:
+        return settings.llm_api_key
+    with _api_key_cache_lock:
+        cached = _api_key_cache.get(command)
+        if cached is not None and time.monotonic() - cached[1] < _API_KEY_CACHE_TTL:
+            return cached[0]
+        refresh_lock = _api_key_refresh_locks.setdefault(command, threading.Lock())
+    if not refresh_lock.acquire(blocking=cached is None):
+        return cached[0]  # another thread is refreshing; the stale token is fine meanwhile
+    try:
+        with _api_key_cache_lock:
+            current = _api_key_cache.get(command)
+            if current is not None and time.monotonic() - current[1] < _API_KEY_CACHE_TTL:
+                return current[0]  # refreshed while we waited
+        token = _run_key_command(command)
+        if token is None:
+            return current[0] if current is not None else settings.llm_api_key
+        with _api_key_cache_lock:
+            _api_key_cache[command] = (token, time.monotonic())
+        return token
+    finally:
+        refresh_lock.release()
 
 
 def ensure_private_dir(path: Path | str) -> Path:

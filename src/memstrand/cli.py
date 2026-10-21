@@ -459,6 +459,7 @@ def _cmd_config(args) -> int:
         ("llm_base_url", settings.llm_base_url),
         ("llm_model", settings.llm_model),
         ("llm_api_key", _mask(settings.llm_api_key)),
+        ("llm_api_key_command", settings.llm_api_key_command or "(none)"),
         ("qdrant_url", settings.qdrant_url or "(embedded)"),
         ("rerank_model", settings.rerank_model or "(off)"),
         ("consolidate_hours", str(settings.consolidate_hours)),

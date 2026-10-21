@@ -75,7 +75,7 @@ from starlette.routing import Mount, Route
 
 from . import __version__
 from .api import Memory, StoreLocked
-from .config import ConfigError, Settings, get_settings
+from .config import ConfigError, Settings, get_settings, resolve_llm_api_key
 from .mcp_server import build_mcp
 from .pipeline.extract import LLMUnavailable
 from .schema import Category, Provenance
@@ -663,10 +663,11 @@ def _extract_delta_content(event: bytes) -> str:
 async def _v1_models(request: Request) -> Response:
     settings: Settings = request.app.state.settings
     client: httpx.AsyncClient = request.app.state.http_client
+    api_key = await run_in_threadpool(resolve_llm_api_key, settings)
     try:
         resp = await client.get(
             f"{settings.llm_base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=_UPSTREAM_TIMEOUT,
         )
         return Response(
@@ -701,7 +702,7 @@ async def _v1_chat_completions(request: Request) -> Response:
             body = {**body, "messages": _inject_system_block(messages, block)}
 
     url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+    headers = {"Authorization": f"Bearer {await run_in_threadpool(resolve_llm_api_key, settings)}"}
     stream = bool(body.get("stream"))
 
     if not stream:
