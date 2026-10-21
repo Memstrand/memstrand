@@ -249,6 +249,8 @@ def _cmd_show(args) -> int:
             print(f"scope set:  {atom['scope_status']}")
         if atom.get("agent"):
             print(f"agent:      {atom['agent']}")
+        if atom.get("session_id"):
+            print(f"session:    {atom['session_id']}  (memstrand session {atom['session_id']})")
         if atom.get("source"):
             source_line = atom["source"]
             if atom.get("source_ref"):
@@ -499,6 +501,45 @@ def _cmd_scope(args) -> int:
             scopes = normalize_atom(mem.set_scopes(args.id, scopes=new_set, add=add, remove=remove))["scopes"]
         for s in scopes:
             print(s or "global")
+    return 0
+
+
+def _fmt_ts(ts) -> str:
+    try:
+        return datetime.fromtimestamp(float(ts), UTC).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OSError):
+        return "?"
+
+
+def _cmd_session(args) -> int:
+    with _memory_session() as mem:
+        result = mem.session_turns(args.id, limit=args.limit)
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+    turns = result["turns"]
+    print(f"session {result['session_id']} — {len(turns)} turns")
+    for t in turns:
+        touched = f"  [touched: {', '.join(t['scopes'])}]" if t.get("scopes") else ""
+        print(f"\n--- {_fmt_ts(t.get('ts'))}  {t['role']}{touched}")
+        print(t["content"])
+    return 0
+
+
+def _cmd_search_sessions(args) -> int:
+    with _memory_session() as mem:
+        results = mem.search_turns(args.query, limit=args.limit, session=args.session)
+    if args.json:
+        print(json.dumps(results, indent=2))
+        return 0
+    if not results:
+        print("(no matching turns)")
+        return 0
+    for r in results:
+        snippet = " ".join(str(r.get("snippet") or "").split())
+        print(f"{_fmt_ts(r.get('ts'))}  {r['session_id']}  {r['role']}")
+        print(f"    {snippet}")
+    print("\nfull conversation: memstrand session <session id>")
     return 0
 
 
@@ -867,6 +908,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--global", dest="global_scope", action="store_true", help="make it global")
     p.add_argument("--keep", action="store_true", help="confirm the current scopes as-is")
     p.set_defaults(func=_cmd_scope)
+
+    p = sub.add_parser("session", help="print a session's logged conversation")
+    p.add_argument("id", help="session id, Claude Code session UUID, or a unique prefix")
+    p.add_argument("--limit", type=int, default=None, help="first N turns only")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_session)
+
+    p = sub.add_parser("search-sessions", help="full-text search over logged session turns")
+    p.add_argument("query")
+    p.add_argument("--session", default=None, help="only this session (id or prefix)")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_search_sessions)
 
     p = sub.add_parser("review", help="memories waiting for you to decide their scope")
     p.add_argument("--limit", type=int, default=20)

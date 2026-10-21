@@ -13,6 +13,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   skips subagent transcripts and live sessions, resumable, and shares
   progress with the live Stop hook. `--dry-run`, `--project`, `--since`,
   `--limit`.
+- `memstrand session <id>` and `memstrand search-sessions <query>` (REST
+  `GET /api/sessions/{id}/turns`, `GET /api/turns/search`): read back and
+  full-text search the raw logged conversation behind memories;
+  `memstrand show` prints a memory's source session. Owner-facing, not
+  exposed via MCP.
+- Extraction keeps only durable knowledge (decisions and why, setup,
+  root causes and fixes, conventions, preferences) and skips one-off
+  events like specific job IDs or step-by-step edits.
+- Attribution no longer counts the program being run in a Bash command
+  (`~/.venv/bin/python3 x.py`) as a touched path, and git-root detection
+  no longer follows symlinks (a venv's python linked into /opt/homebrew
+  was attributing work to Homebrew's repo).
 - A synchronous `Memory.improve()` no longer holds the store-wide lock for
   the whole distillation (minutes of LLM calls) — only the distillation
   lock — so a shared daemon keeps serving recall and context requests.

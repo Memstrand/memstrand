@@ -137,6 +137,10 @@ class SessionStore(Protocol):
     def get_session(self, session_id: str, after_id: int = 0) -> list[dict]: ...  # dicts include "id", "scopes"
     def list_sessions(self, task_id: str | None = None) -> list[str]: ...
     def clear_session(self, session_id: str) -> None: ...
+    def find_sessions(self, ref: str) -> list[str]: ...  # exact / claude-code:<ref> / prefix matches
+    def search_turns(
+        self, query: str, limit: int = 20, session_id: str | None = None
+    ) -> list[dict]: ...  # full-text over raw turns: id, session_id, role, ts, content, snippet
     def log_provenance(
         self, atom_id: str, action: str, detail: str = "", ts: float | None = None
     ) -> None: ...  # append-only; ts override for re-importing an export, None = now

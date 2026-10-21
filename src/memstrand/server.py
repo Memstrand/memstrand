@@ -599,6 +599,27 @@ async def _atom_scopes(request: Request) -> Response:
 
 
 @_json_errors
+async def _session_turns(request: Request) -> Response:
+    mem: Memory = request.app.state.mem
+    limit_raw = request.query_params.get("limit")
+    limit = _parse_bounded_int(limit_raw, name="limit", default=0, minimum=0) if limit_raw else None
+    result = await run_in_threadpool(mem.session_turns, request.path_params["session_id"], limit)
+    return JSONResponse(result)
+
+
+@_json_errors
+async def _turns_search(request: Request) -> Response:
+    params = request.query_params
+    query = (params.get("q") or "").strip()
+    if not query:
+        raise ValueError("q is required")
+    limit = _parse_bounded_int(params.get("limit"), name="limit", default=20, minimum=1, maximum=500)
+    mem: Memory = request.app.state.mem
+    results = await run_in_threadpool(mem.search_turns, query, limit, params.get("session") or None)
+    return JSONResponse({"results": results})
+
+
+@_json_errors
 async def _reviews(request: Request) -> Response:
     """GET ?limit=: read-only listing of pending scope reviews. POST
     {"limit", "session"}: the next reviews for that session, each returned
@@ -1039,6 +1060,8 @@ def create_app(
         Route("/api/reviews", _reviews, methods=["GET", "POST"]),
         Route("/api/scopes/rename", _scopes_rename, methods=["POST"]),
         Route("/api/turns", _turns, methods=["POST"]),
+        Route("/api/turns/search", _turns_search, methods=["GET"]),
+        Route("/api/sessions/{session_id:path}/turns", _session_turns, methods=["GET"]),
         Route("/api/improve", _improve, methods=["POST"]),
         Route("/api/answer", _answer, methods=["POST"]),
         Route("/api/context", _context, methods=["POST"]),

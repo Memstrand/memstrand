@@ -140,21 +140,41 @@ _TOOL_PATH_KEYS = ("file_path", "path", "notebook_path")
 _TEXT_PATH_RE = re.compile(r"(?<![\w/.~-])(~?/[\w.@+\-]+(?:/[\w.@+\-]+)*)")
 
 
+_SHELL_OPERATORS = {"&&", "||", ";", "|", "&", "(", ")", ";;", "|&"}
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
 def _bash_paths(command: str) -> list[str]:
     """Best-effort paths from a shell command: `cd`/`pushd` targets and any
-    absolute or ~-relative token. Never raises."""
+    absolute or ~-relative ARGUMENT. The program being run (the first word
+    of each command, after any `VAR=value` prefixes) is not a path the
+    session worked on — `~/.venv/bin/python3 x.py` must not make the
+    python install's repo a candidate scope. Never raises."""
     try:
-        tokens = shlex.split(command, posix=True)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
     except ValueError:
         tokens = command.split()
     paths: list[str] = []
-    for i, tok in enumerate(tokens):
-        tok = tok.strip(";|&()")
-        if tok in ("cd", "pushd") and i + 1 < len(tokens):
-            target = tokens[i + 1].strip(";|&()")
-            if not target.startswith(("/", "~/")):  # absolute targets are picked up below
-                paths.append(target)
-        elif tok.startswith(("/", "~/")):
+    at_command = True
+    expect_cd_target = False
+    for tok in tokens:
+        if tok in _SHELL_OPERATORS:
+            at_command, expect_cd_target = True, False
+            continue
+        if at_command:
+            if _ENV_ASSIGNMENT_RE.match(tok):
+                continue
+            at_command = False
+            expect_cd_target = tok in ("cd", "pushd")
+            continue
+        if expect_cd_target:
+            expect_cd_target = False
+            if not tok.startswith("-"):
+                paths.append(tok)
+                continue
+        if tok.startswith(("/", "~/")):
             paths.append(tok)
     return list(dict.fromkeys(paths))
 

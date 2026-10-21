@@ -25,6 +25,8 @@
 | `scope <id>` | show or change which repos/tasks a memory applies to |
 | `scopes` / `scopes rename <old> <new>` | known scopes with counts / re-key one scope |
 | `review` | memories waiting for you to decide their scope |
+| `session <id>` | print a session's logged conversation (full id, Claude Code UUID, or unique prefix) |
+| `search-sessions <query>` | full-text search over logged session turns |
 | `stats` | atom/edge/session counts, by category and task |
 | `config` | effective configuration |
 | `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
@@ -86,6 +88,11 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
   `--global`, `--keep` (confirm as-is). Any of these resolves a pending
   scope review. Removing every scope is refused — use `forget`.
 - `review`: `--limit`, `--json`
+- `session <id>`: `--limit`, `--json`. `memstrand show <id>` prints each
+  memory's source session.
+- `search-sessions <query>`: `--session`, `--limit`, `--json`. Every word
+  must match (FTS5). Raw turns are not scope-filtered — like `list`/`show`,
+  these are owner-facing; neither is exposed as an MCP tool.
 - `scopes`: `--json`; `scopes rename <old> <new>` re-keys every memory in
   `old` (e.g. a folder name to its remote URL)
 - `hook claude-code`: `--task-from {auto,cwd,none,env}`, `--no-improve`.
@@ -109,6 +116,7 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 `POST /turns`, `POST /improve`, `POST /answer`, `POST /context`,
 `POST /consolidate`, `POST /ingest`, `GET /export`, `POST /import`,
 `POST /forget_source`, `POST /atoms/{id}/scopes` (`{"set"|"add"|"remove": [...]}`),
+`GET /sessions/{id}/turns` (`?limit=`), `GET /turns/search` (`?q=&limit=&session=`),
 `GET /scopes`, `POST /scopes/rename` (`{"old","new"}`), `GET /reviews`
 (`?limit=`, read-only), `POST /reviews` (`{"limit","session"}`: each review
 returned once per session and counted as shown), and `{"keep": true}` on

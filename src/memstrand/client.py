@@ -342,6 +342,18 @@ class RemoteMemory:
             result = self._request("GET", "/api/reviews", params={"limit": limit})
         return result.get("reviews", []) if result else []
 
+    def session_turns(self, ref: str, limit: int | None = None) -> dict:
+        params = _drop_none({"limit": limit})
+        result = self._request("GET", f"/api/sessions/{ref}/turns", params=params, not_found_ok=True)
+        if result is None:
+            raise KeyError(f"no such session: {ref}")
+        return result
+
+    def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
+        params = _drop_none({"q": query, "limit": limit, "session": session})
+        result = self._request("GET", "/api/turns/search", params=params)
+        return result.get("results", []) if result else []
+
     def rename_scope(self, old: str, new: str) -> int:
         result = self._request("POST", "/api/scopes/rename", json={"old": old, "new": new})
         return result.get("renamed", 0) if result else 0

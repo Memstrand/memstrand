@@ -501,6 +501,35 @@ class Memory:
                 session_id, role, content, task_id=task_id, scopes=scopes, agent=agent
             )
 
+    # -- raw session access (owner-facing; NOT scope-filtered) ----------------------
+
+    def session_turns(self, ref: str, limit: int | None = None) -> dict:
+        """The logged turns of one session. `ref` may be the full session id,
+        a Claude Code session UUID (without the `claude-code:` prefix), or a
+        unique prefix of either. Raw turns are not scope-filtered: like
+        `list()`/`get()`, this is an owner-facing browse surface (CLI/REST),
+        deliberately not exposed as an MCP tool. Raises KeyError if nothing
+        matches, ValueError if `ref` is ambiguous."""
+        with self._lock:
+            matches = self.sessions.find_sessions(ref)
+            if not matches:
+                raise KeyError(f"no such session: {ref}")
+            if len(matches) > 1:
+                shown = ", ".join(matches[:5]) + (" ..." if len(matches) > 5 else "")
+                raise ValueError(f"session {ref!r} is ambiguous: {shown}")
+            turns = self.sessions.get_session(matches[0])
+            if limit is not None:
+                turns = turns[:limit]
+            return {"session_id": matches[0], "turns": turns}
+
+    def search_turns(self, query: str, limit: int = 20, session: str | None = None) -> list[dict]:
+        """Full-text search over raw logged turns (owner-facing, not
+        scope-filtered — see `session_turns`). `session` narrows to one
+        session (same ref forms as `session_turns`)."""
+        with self._lock:
+            session_id = self.session_turns(session, limit=0)["session_id"] if session else None
+            return self.sessions.search_turns(query, limit=limit, session_id=session_id)
+
     def forget(self, atom_id: str) -> bool:
         """Delete with provenance-chain cleanup. Returns False if the
         atom never existed (never silently pretends to have deleted it)."""
