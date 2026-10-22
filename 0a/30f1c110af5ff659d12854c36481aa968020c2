@@ -1,0 +1,52 @@
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_9d26cf526d36f9 39,215-220,298,304,306,350-362,439,459,462,467,472,487,504,645,650-736,852,944,985
+  s_cc0c7560faa1c4::t_1c1c1c22b9dde5 1012,1034,1039-1040,1123,1205,1210-1211,1226,1234,1236-1237,1239,1278
+src/memstrand/pipeline/tagging.py
+  s_cc0c7560faa1c4::t_9f5330ec955e6a 1-137
+src/memstrand/web/index.html
+  s_cc0c7560faa1c4::t_1d1f98e6e66e33 236-245,259,342-344,355-362,544-558,583,607-665,669,675,683,796,882-899,925-940
+  s_cc0c7560faa1c4::t_6a532a4d5cadcd 776
+  s_cc0c7560faa1c4::t_5637efe3b1cd8d 941
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_d04a5e141dc5c6 170,187,199-200,223,233-234,261-262,274-278,571-659,975,985-986,1002-1003,1112-1134
+src/memstrand/client.py
+  s_cc0c7560faa1c4::t_95ea43e8b0aa96 143,159,226,240,272,281,368-390
+src/memstrand/mcp_server.py
+  s_cc0c7560faa1c4::t_31a72b6ffc7196 102,109-111,124,141,157,169
+src/memstrand/pipeline/distill.py
+  s_cc0c7560faa1c4::t_b0fcd1a141a12a 169-185,440-441,452,455-457,488-489,521
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_d30283d6bedaef 18,24-25,69-80,223,237,260-261
+src/memstrand/schema.py
+  s_cc0c7560faa1c4::t_234dbf06573f67 11,71-98,179,215-225,261-262
+src/memstrand/server.py
+  s_cc0c7560faa1c4::t_85803dc51c931e 418,442,457,470,657-703,1123-1127
+src/memstrand/stores/base.py
+  s_cc0c7560faa1c4::t_0d107f4a354a7c 60,68-73
+src/memstrand/stores/graph_kuzu.py
+  s_cc0c7560faa1c4::t_b02c3bf41ae917 32,49-51,77,86,110,158,185,201,249,265,278,280,288,301,303,364,399,454-473
+src/memstrand/stores/graph_sqlite.py
+  s_cc0c7560faa1c4::t_664e01c2fdbc39 94-95,112-114,182-188,191-209,222-226,235,246-247,257,260,267,275,277,321,327-352
+src/memstrand/stores/keyword_sqlite.py
+  s_cc0c7560faa1c4::t_5172a4b3f8c506 24-27,84-86,88-91,111-112,115
+src/memstrand/stores/vector_qdrant.py
+  s_cc0c7560faa1c4::t_9b311075520e6a 211,234-235,286
+tests/test_tags.py
+  s_cc0c7560faa1c4::t_8894b96c7a8784 1-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "0a30f1c110af5ff659d12854c36481aa968020c2",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
