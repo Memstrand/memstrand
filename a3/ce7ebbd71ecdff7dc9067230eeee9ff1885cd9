@@ -1,0 +1,19 @@
+src/memstrand/web/index.html
+  s_cc0c7560faa1c4::t_96597b9b28f011 514-518
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "a3ce7ebbd71ecdff7dc9067230eeee9ff1885cd9",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
