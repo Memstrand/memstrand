@@ -674,6 +674,25 @@ class Memory:
             self.sessions.log_provenance(atom_id, "tags", ", ".join(new_tags) or "(none)")
             return updated
 
+    def rename_tag(self, old: str, new: str | None) -> int:
+        """Rename tag `old` to `new` on every atom (merging into `new` where
+        it already exists), or drop it everywhere when `new` is None.
+        Re-embeds the affected atoms locally. Returns how many changed."""
+        old_key = (normalize_tags([old]) or [None])[0]
+        new_key = (normalize_tags([new]) or [None])[0] if new is not None else None
+        if old_key is None or (new is not None and new_key is None):
+            raise ValueError(f"invalid tag: {old if old_key is None else new!r}")
+        if old_key == new_key:
+            return 0
+        changed = 0
+        for atom in list(self._iter_all_atoms()):
+            if old_key not in atom.tags:
+                continue
+            tags = [new_key if t == old_key else t for t in atom.tags if new_key is not None or t != old_key]
+            self.set_tags(atom.id, tags=tags)
+            changed += 1
+        return changed
+
     def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]:
         """Most-used tags (optionally among atoms in scope `task_id`)."""
         with self._lock:
@@ -819,7 +838,7 @@ class Memory:
                 out.append(
                     {
                         "id": atom.id, "content": atom.content, "category": atom.category.value,
-                        "scopes": list(atom.scopes), "kind": review["kind"],
+                        "scopes": list(atom.scopes), "tags": list(atom.tags), "kind": review["kind"],
                         "reason": review["reason"], "candidates": review["candidates"],
                     }
                 )

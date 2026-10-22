@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   indexed `atom_tags` table (source of truth); Kuzu stores them encoded.
 - `memstrand retag`: LLM-tag existing memories, one call per source session
   with its conversation as context. `memstrand tag <id>`, `memstrand tags`.
+- Tag hygiene: `memstrand tags rename OLD NEW` (merges into an existing
+  tag) and `memstrand tags drop TAG` (REST `POST /api/tags/rename`); LLM-
+  assigned tags skip a stop list (memory category names like `artifact`,
+  generic filler like `best-practice`) — manual tags are kept as given.
+- Review items show their tags (web UI and `memstrand review`) and open the
+  detail drawer for tag editing; the Review list refreshes after edits.
 - `memstrand reindex` (REST `POST /api/reindex`): rebuild the vector and
   keyword indexes from the graph store; the keyword index is rebuilt
   automatically when its schema changes.

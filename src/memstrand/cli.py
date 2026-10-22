@@ -569,6 +569,15 @@ def _cmd_search_sessions(args) -> int:
 
 
 def _cmd_tags(args) -> int:
+    if args.tags_cmd in ("rename", "drop"):
+        with contextlib.closing(get_memory(timeout=900.0)) as mem:
+            if args.tags_cmd == "rename":
+                n = mem.rename_tag(args.old, args.new)
+                print(f"renamed {args.old} -> {args.new} on {n} memories")
+            else:
+                n = mem.rename_tag(args.tag, None)
+                print(f"dropped {args.tag} from {n} memories")
+        return 0
     with _memory_session() as mem:
         scope = _resolve_scope_args(mem, [args.repo])[0] if args.repo else None
         counts = mem.tag_counts(scope, args.limit)
@@ -672,6 +681,8 @@ def _cmd_review(args) -> int:
         scopes = ", ".join(short_name(s) for s in r["scopes"])
         print(f"{r['id']}  [{r['category']}] {r['content']}")
         print(f"    now: {scopes}  —  {r['reason']}")
+        if r.get("tags"):
+            print(f"    tags: {', '.join(r['tags'])}")
     print("\nresolve with: memstrand scope <id> --global | --set <repo> [...] | --keep")
     return 0
 
@@ -1109,11 +1120,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=_cmd_search_sessions)
 
-    p = sub.add_parser("tags", help="most-used tags")
+    p = sub.add_parser("tags", help="most-used tags; `tags rename OLD NEW` / `tags drop TAG` to clean up")
     p.add_argument("--repo", default=None, help="only among memories in this scope")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--json", action="store_true")
-    p.set_defaults(func=_cmd_tags)
+    p.set_defaults(func=_cmd_tags, tags_cmd=None)
+    tags_sub = p.add_subparsers(dest="tags_cmd")
+    tp = tags_sub.add_parser("rename", help="rename (or merge) tag OLD into NEW on every memory")
+    tp.add_argument("old")
+    tp.add_argument("new")
+    tp.set_defaults(func=_cmd_tags)
+    tp = tags_sub.add_parser("drop", help="remove TAG from every memory")
+    tp.add_argument("tag")
+    tp.set_defaults(func=_cmd_tags)
 
     p = sub.add_parser("tag", help="show or change a memory's tags")
     p.add_argument("id")

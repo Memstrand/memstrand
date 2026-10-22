@@ -382,6 +382,10 @@ class RemoteMemory:
         result = self._request("GET", "/api/tags", params=_drop_none({"scope": task_id, "limit": limit}))
         return [(r["tag"], r["count"]) for r in (result or {}).get("tags", [])]
 
+    def rename_tag(self, old: str, new: str | None) -> int:
+        result = self._request("POST", "/api/tags/rename", json={"old": old, "new": new})
+        return int(result.get("changed", 0)) if result else 0
+
     def retag(self, atom_ids: list[str], session_id: str | None = None) -> dict:
         return self._request("POST", "/api/retag", json=_drop_none({"atom_ids": atom_ids, "session_id": session_id})) or {}
 

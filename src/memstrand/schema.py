@@ -96,6 +96,25 @@ def normalize_tags(tags: Iterable[str | None] | None) -> list[str]:
     return out
 
 
+# Tags an LLM must not produce: memory category names (they duplicate the
+# category field) and generic filler that relates everything to everything.
+TAG_STOPLIST = frozenset(
+    {
+        "instruction", "fact", "decision", "goal", "commitment", "preference",
+        "relationship", "context", "event", "learning", "observation",
+        "artifact", "error", "best-practice", "best-practices", "general",
+        "misc", "miscellaneous", "other", "info", "information", "note",
+        "notes", "memory", "memories", "important", "todo",
+    }
+)
+
+
+def clean_llm_tags(tags: Iterable[str | None] | None) -> list[str]:
+    """`normalize_tags` minus TAG_STOPLIST — for LLM-assigned tags only
+    (a user's own manual tags are kept as given)."""
+    return [t for t in normalize_tags(tags) if t not in TAG_STOPLIST]
+
+
 def _legacy_task_id_to_scopes(data, *, query: bool):
     """Accept the pre-v2 `task_id=` keyword: it becomes a one-element scope
     set (an atom with no task is global; a query with no task sees only

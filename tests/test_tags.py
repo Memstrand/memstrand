@@ -197,3 +197,60 @@ def test_rest_client_and_cli(tmp_path, capsys, monkeypatch):
 def test_tag_map_accepts_bare_and_wrapped_shapes():
     assert tagging._parse_tag_map('{"1": ["gcp"]}', 1) == {1: ["gcp"]}
     assert tagging._parse_tag_map('```json\n{"initiatives": ["x"], "tags": {"1": ["aws"]}}\n```', 1) == {1: ["aws"]}
+
+
+# -- review items show tags; cleanup ----------------------------------------------------------
+
+
+def test_review_items_carry_tags_and_cli_shows_them(mem, capsys, monkeypatch):
+    a = mem.remember("roll out one tenant at a time", scopes=["geoforge"], tags=["ipv6-reprovisioning", "multi-tenant"])
+    mem.queue_scope_review(a.id, "ambiguous", "unsure")
+    (review,) = mem.pending_scope_reviews()
+    assert review["tags"] == ["ipv6-reprovisioning", "multi-tenant"]
+    monkeypatch.setattr(mem, "close", lambda: None)
+    monkeypatch.setattr(cli, "get_memory", lambda *k, **kw: mem)
+    assert cli.main(["review"]) == 0
+    assert "tags: ipv6-reprovisioning, multi-tenant" in capsys.readouterr().out
+
+
+def test_stoplist_filters_llm_tags_but_not_manual_ones(mem, monkeypatch):
+    from memstrand.schema import clean_llm_tags
+
+    assert clean_llm_tags(["Artifact", "gcp", "best-practice", "misc", "ipv6"]) == ["gcp", "ipv6"]
+    monkeypatch.setattr(extract_mod, "chat_completion", lambda *a, **k: json.dumps(
+        [{"category": "fact", "content": "x", "tags": ["fact", "gcp", "best-practice"]}]))
+    assert extract_mod.extract_atoms([{"role": "user", "content": "hi"}], "u", "m")[0]["tags"] == ["gcp"]
+    assert tagging._parse_tag_map('{"1": ["artifact", "aws"]}', 1) == {1: ["aws"]}
+    assert mem.remember("manual", tags=["artifact", "gcp"]).tags == ["artifact", "gcp"]  # user's choice kept
+
+
+def test_rename_merges_and_drop_removes(mem, capsys, monkeypatch):
+    a = mem.remember("a", tags=["google-cloud", "ipv6"])
+    b = mem.remember("b", tags=["gcp", "google-cloud"])
+    c = mem.remember("c", tags=["artifact", "aws"])
+    assert mem.rename_tag("google-cloud", "gcp") == 2
+    assert mem.graph.get_atom(a.id).tags == ["gcp", "ipv6"]
+    assert mem.graph.get_atom(b.id).tags == ["gcp"]  # merged, no duplicate
+    assert mem.rename_tag("artifact", None) == 1
+    assert mem.graph.get_atom(c.id).tags == ["aws"]
+    with pytest.raises(ValueError):
+        mem.rename_tag("!!", "x")
+    monkeypatch.setattr(mem, "close", lambda: None)
+    monkeypatch.setattr(cli, "get_memory", lambda *k, **kw: mem)
+    assert cli.main(["tags", "rename", "aws", "amazon-web-services"]) == 0
+    assert "on 1 memories" in capsys.readouterr().out
+    assert cli.main(["tags", "drop", "ipv6"]) == 0
+    assert "dropped ipv6 from 1 memories" in capsys.readouterr().out
+    assert dict(mem.tag_counts()) == {"gcp": 2, "amazon-web-services": 1}
+
+
+def test_rename_over_rest(tmp_path):
+    mem = _make_mem(tmp_path)
+    mem.remember("a", tags=["k8s"])
+    settings = replace(get_settings(), home=tmp_path, server_host="127.0.0.1", server_port=7777)
+    with TestClient(create_app(mem, settings), base_url="http://127.0.0.1:7777") as http:
+        remote = RemoteMemory("http://127.0.0.1:7777", client=http)
+        assert remote.rename_tag("k8s", "kubernetes") == 1
+        assert remote.rename_tag("kubernetes", None) == 1
+        assert http.post("/api/tags/rename", json={"old": 3}).status_code == 400
+    assert mem.tag_counts() == []

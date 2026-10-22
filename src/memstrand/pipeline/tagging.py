@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from ..schema import normalize_tags
+from ..schema import clean_llm_tags
 from . import usage
 from .extract import ExtractionFailed, chat_completion
 
@@ -42,7 +42,9 @@ Step 2 — give EACH memory 3-6 lowercase-kebab-case tags covering ALL of:
     auth, networking, resource-contention, rollback).
 Tags are reusable categories, not sentence fragments: "deployment-manager"
 yes, "multi-field-updates" no; "resumability" yes, "resume-logic" no. No
-ticket numbers, IDs, people, or one-off names, and not the repo name.
+ticket numbers, IDs, people, or one-off names, not the repo name, not
+memory-type words (fact, decision, artifact, learning, ...), and no generic
+filler (best-practice, misc, general).
 Reuse terms from the existing-tags list where they fit instead of
 inventing synonyms.
 
@@ -88,7 +90,7 @@ def _parse_tag_map(raw: str, count: int) -> dict[int, list[str]]:
         except ValueError:
             continue
         if 1 <= n <= count and isinstance(tags, list):
-            out[n] = normalize_tags(tags)
+            out[n] = clean_llm_tags(tags)
     return out
 
 

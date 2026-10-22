@@ -25,7 +25,7 @@
 | `scope <id>` | show or change which repos/tasks a memory applies to |
 | `scopes` / `scopes rename <old> <new>` | known scopes with counts / re-key one scope |
 | `review` | memories waiting for you to decide their scope (also a tab in the web UI) |
-| `tags` | most-used tags (`--repo` to narrow) |
+| `tags` | most-used tags (`--repo` to narrow); `tags rename OLD NEW` (also merges), `tags drop TAG` |
 | `tag <id>` | show or change a memory's tags (`--set`, `--add`, `--remove`) |
 | `retag` | LLM-tag existing memories using their source conversations |
 | `reindex` | rebuild vector + keyword indexes from the graph store (no LLM) |
@@ -138,7 +138,8 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 `POST /consolidate`, `POST /ingest`, `GET /export`, `POST /import`,
 `POST /forget_source`, `POST /atoms/{id}/scopes` (`{"set"|"add"|"remove": [...]}`),
 `GET /sessions/{id}/turns` (`?limit=`), `GET /turns/search` (`?q=&limit=&session=`),
-`POST /atoms/{id}/tags` (`{"set"|"add"|"remove": [...]}`), `GET /atoms/{id}/related`
+`POST /atoms/{id}/tags` (`{"set"|"add"|"remove": [...]}`), `POST /tags/rename`
+(`{"old", "new"}`; `"new": null` drops), `GET /atoms/{id}/related`
 (`?min_shared=&limit=`), `GET /tags` (`?scope=&limit=`), `POST /retag`
 (`{"atom_ids": [...], "session_id"?}`), `POST /reindex`, `tags` on
 `remember`/`recall`, `?tag=` on `GET /atoms`,

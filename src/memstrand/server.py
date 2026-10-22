@@ -686,6 +686,17 @@ async def _tags_list(request: Request) -> Response:
 
 
 @_json_errors
+async def _tags_rename(request: Request) -> Response:
+    """POST {"old": "x", "new": "y"} renames/merges; {"old": "x", "new": null} drops."""
+    data = await _body(request)
+    old, new = data.get("old"), data.get("new")
+    if not isinstance(old, str) or (new is not None and not isinstance(new, str)):
+        raise ValueError("old must be a string; new a string or null")
+    mem: Memory = request.app.state.mem
+    return JSONResponse({"changed": await run_in_threadpool(mem.rename_tag, old, new)})
+
+
+@_json_errors
 async def _retag(request: Request) -> Response:
     data = await _body(request)
     atom_ids = _parse_scopes(data.get("atom_ids")) or []
@@ -1123,6 +1134,7 @@ def create_app(
         Route("/api/atoms/{atom_id}/tags", _atom_tags, methods=["POST"]),
         Route("/api/atoms/{atom_id}/related", _atom_related, methods=["GET"]),
         Route("/api/tags", _tags_list, methods=["GET"]),
+        Route("/api/tags/rename", _tags_rename, methods=["POST"]),
         Route("/api/retag", _retag, methods=["POST"]),
         Route("/api/reindex", _reindex, methods=["POST"]),
         Route("/api/reviews", _reviews, methods=["GET", "POST"]),

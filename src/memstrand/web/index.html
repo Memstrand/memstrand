@@ -633,7 +633,9 @@
     const row = el("div", { class: "review-row" });
     row.appendChild(el("div", { class: "card-top" }, categoryBadge(r.category),
       el("span", { class: "score", text: "now: " + scopeLabel(r) })));
-    row.appendChild(el("p", { class: "content", text: r.content }));
+    row.appendChild(el("p", { class: "content", text: r.content, title: "Open details",
+      style: "cursor:pointer", onclick: () => openDrawer(r.id) }));
+    if (Array.isArray(r.tags) && r.tags.length) row.appendChild(tagChips(r.tags));
     row.appendChild(el("div", { class: "muted", text: r.reason }));
     const picker = el("select", { multiple: "multiple", size: "4", hidden: "hidden" });
     for (const k of known) {
@@ -655,6 +657,7 @@
       el("button", { type: "button", text: "Everywhere", onclick: () => answer({ set: [""] }, "Everywhere") }),
       el("button", { type: "button", text: "Keep as is", onclick: () => answer({ keep: true }, "Keep") }),
       el("button", { type: "button", text: "Only these repos…", onclick: () => { picker.hidden = false; save.hidden = false; } }),
+      el("button", { type: "button", text: "Details / tags", onclick: () => openDrawer(r.id) }),
       picker, save, status);
     save.addEventListener("click", () => {
       const chosen = Array.from(picker.selectedOptions).map((o) => o.value);
@@ -823,6 +826,7 @@
     const activeBtn = document.querySelector(".tab-btn.active");
     const name = activeBtn ? activeBtn.dataset.tab : "search";
     if (name === "browse") loadBrowse();
+    else if (name === "review") loadReviews();
     else if (name === "search" && state.lastSearchPayload) runSearch();
   }
 

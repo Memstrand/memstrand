@@ -15,7 +15,7 @@ import re
 
 import httpx
 
-from ..schema import Category, Provenance, normalize_tags
+from ..schema import Category, Provenance, clean_llm_tags
 
 EXTRACTION_SYSTEM_PROMPT = """\
 You extract durable memories from a conversation session.
@@ -76,8 +76,9 @@ session was doing (e.g. new-region-build, ipv6-reprovisioning,
 incident-response, ci-pipeline) — even when the item's words don't say it,
 (3) at least one domain concept (e.g. multi-tenant, prod, rate-limiting,
 auth). Tags are reusable categories, not sentence fragments ("resumability"
-yes, "resume-logic" no); no ticket numbers, IDs, or one-off names, and not
-the repo name.
+yes, "resume-logic" no); no ticket numbers, IDs, or one-off names, not the
+repo name, not the memory categories above (fact, artifact, ...), and no
+generic filler like best-practice or misc.
 When a list of existing tags is given, reuse those terms where they fit
 instead of inventing synonyms.\
 """
@@ -222,7 +223,7 @@ def _valid_atom(item: dict) -> dict | None:
         "provenance": provenance,
         "confidence": confidence,
         "scope": scope,
-        "tags": normalize_tags(item.get("tags") if isinstance(item.get("tags"), list) else []),
+        "tags": clean_llm_tags(item.get("tags") if isinstance(item.get("tags"), list) else []),
     }
     if scope == "ambiguous":
         atom["candidates"] = candidates
