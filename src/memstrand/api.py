@@ -829,6 +829,16 @@ class Memory:
                 if atom is None:
                     self.sessions.resolve_scope_review(review["atom_id"], "expired")
                     continue
+                if atom.id in self.graph.superseded_ids([atom.id]):
+                    # edited since it was queued: ask about the current version
+                    head_id = self._supersedes_head(atom.id)
+                    moved = head_id != atom.id and self._carry_review(atom.id, head_id)
+                    head_review = next((r for r in reviews_fn("pending") if r["atom_id"] == head_id), None)
+                    if not moved or head_review is None:
+                        continue
+                    atom, review = self.graph.get_atom(head_id), head_review
+                    if atom is None:
+                        continue
                 if session_key is not None:
                     if session_key in review["shown_sessions"]:
                         continue
@@ -977,6 +987,7 @@ class Memory:
                 source=old.source,
                 source_ref=old.source_ref,
                 agent=old.agent,
+                tags=old.tags,
             )
             self.graph.add_edge(
                 MemoryEdge(
@@ -985,7 +996,23 @@ class Memory:
                 )
             )
             self.sessions.log_provenance(new_atom.id, "update", f"supersedes {old.id}")
+            self._carry_review(old.id, new_atom.id)
             return new_atom
+
+    def _carry_review(self, old_id: str, new_id: str) -> bool:
+        """A pending scope question follows a memory to its corrected
+        version (the superseded original no longer shows up anywhere the
+        user would answer it). Returns True if one was moved."""
+        reviews_fn = getattr(self.sessions, "scope_reviews", None)
+        if reviews_fn is None or old_id == new_id:
+            return False
+        review = next((r for r in reviews_fn("pending") if r["atom_id"] == old_id), None)
+        if review is None:
+            return False
+        self.sessions.resolve_scope_review(old_id, "superseded")
+        # no-op (False) if the new version already has a review — e.g. the
+        # user already decided its scope; that decision stands
+        return self.sessions.queue_scope_review(new_id, review["kind"], review["reason"], review["candidates"])
 
     # -- scoped read path -------------------------------------------------------
 

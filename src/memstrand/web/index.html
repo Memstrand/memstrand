@@ -1062,7 +1062,14 @@
       try {
         const updated = await api("/api/atoms/" + encodeURIComponent(atom.id), { method: "PATCH", body: JSON.stringify(payload) });
         await openDrawer(updated.id);
+        if (updated.id !== atom.id) {
+          // a content edit is a correction: a new memory supersedes the original
+          $("#drawer-content").prepend(el("div", { class: "panel", style: "margin-bottom:0.6rem",
+            text: "Saved as a corrected version (" + updated.id + "). The original " + atom.id +
+              " stays in history as superseded." }));
+        }
         refreshCurrentView();
+        refreshReviewCount();
       } catch (err) {
         errBox.textContent = "Save failed: " + err.message;
         errBox.style.display = "";
