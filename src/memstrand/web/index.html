@@ -511,7 +511,11 @@
   // ---------- formatting ----------
   function fmtDate(iso) {
     if (!iso) return "—";
-    const d = new Date(iso);
+    // ISO strings parse as-is; numbers are epoch SECONDS (the provenance
+    // ledger's `ts`) — Date() wants milliseconds, or it shows 1970.
+    const d = (typeof iso === "number" || /^\d+(\.\d+)?$/.test(String(iso)))
+      ? new Date(Number(iso) * 1000)
+      : new Date(iso);
     return isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
   }
   function fmtNum(n, digits) {
