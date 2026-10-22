@@ -1,0 +1,21 @@
+src/memstrand/cli.py
+  s_cc0c7560faa1c4::t_00f320c7d0abab 14,334-337
+tests/test_extraction_failures.py
+  s_cc0c7560faa1c4::t_46adca9ea718b6 108-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "89eb6f6c07420cf1e7e13cb2dd156619c1e6023d",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
