@@ -1,0 +1,23 @@
+src/memstrand/pipeline/extract.py
+  s_cc0c7560faa1c4::t_073d90a2e263ed 70-80
+src/memstrand/pipeline/tagging.py
+  s_cc0c7560faa1c4::t_2206293a023163 28-51,82-83
+tests/test_tags.py
+  s_cc0c7560faa1c4::t_daac708a7865c5 134,146-147,195-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "1f21b0de7748df446bab40fcc334abb5fa9f36df",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
