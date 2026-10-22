@@ -11,6 +11,7 @@ a real bug doesn't get silently swallowed.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import gzip
 import json
 import os
@@ -330,7 +331,10 @@ def _cmd_log_turn(args) -> int:
 
 
 def _cmd_improve(args) -> int:
-    with _memory_session() as mem:
+    # a synchronous distillation runs LLM calls for minutes; the default 30s
+    # client timeout would report an error while the daemon finishes the work
+    mem = get_memory() if args.background else get_memory(timeout=900.0)
+    with contextlib.closing(mem):
         sessions = args.sessions
         if args.redo:
             if not sessions:

@@ -105,3 +105,14 @@ def test_reset_over_rest(tmp_path):
         assert remote.mark_distilled("s", reset=True) == 0
         assert mem.sessions.undistilled_sessions() == ["s"]
         assert http.post("/api/sessions/s/distilled").status_code == 200  # empty body still works
+
+
+def test_sync_improve_uses_a_long_client_timeout(tmp_path, monkeypatch, capsys):
+    mem = _make_mem(tmp_path)
+    seen = []
+    monkeypatch.setattr(mem, "close", lambda: None)
+    monkeypatch.setattr(cli, "get_memory", lambda *a, **k: seen.append(k) or mem)
+    assert cli.main(["improve"]) == 0
+    assert cli.main(["improve", "--background"]) == 0
+    capsys.readouterr()
+    assert seen == [{"timeout": 900.0}, {}]
