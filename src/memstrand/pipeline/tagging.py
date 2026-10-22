@@ -25,17 +25,30 @@ if TYPE_CHECKING:
 TAG_SYSTEM_PROMPT = """\
 You assign topic tags to memories that were extracted from a conversation.
 Each memory is one atomic sentence; the sentence alone lost the context it
-came from. Use the conversation to restore it: give each memory 2-6
-lowercase-kebab-case tags saying what it is ABOUT:
-(1) systems/technologies involved (e.g. gcp, aws, ipv6, terraform, k8s),
-(2) the activity or broader initiative it came out of (e.g.
-new-region-build, ipv6-reprovisioning, incident-response, ci-pipeline),
-(3) domain concepts (e.g. multi-tenant, prod, rate-limiting, auth).
-Use general, reusable terms — not sentence fragments, ticket numbers, or
-one-off names. Do not use the repo name itself as a tag. Reuse terms from
-the existing-tags list where they fit instead of inventing synonyms.
-Output ONLY a JSON object mapping each memory's number to its tag list,
-e.g. {"1": ["gcp", "new-region-build"], "2": ["ipv6", "multi-tenant"]}.\
+came from. Use the conversation to restore it, so that someone searching
+later by system, by initiative, or by concept finds the memory.
+
+Step 1 — read the whole conversation and name its 1-3 main initiatives:
+what work was being done, as reusable kebab-case terms (e.g.
+new-region-build, ipv6-reprovisioning, incident-response, cost-cleanup,
+ci-pipeline, tenant-migration).
+
+Step 2 — give EACH memory 3-6 lowercase-kebab-case tags covering ALL of:
+(1) at least one system/technology it involves (e.g. gcp, aws, oci, ipv6,
+    terraform, k8s, lambda, postgres),
+(2) at least one initiative/activity it came out of — usually one of the
+    step-1 initiatives, even when the memory's own words don't mention it,
+(3) at least one domain concept (e.g. multi-tenant, prod, rate-limiting,
+    auth, networking, resource-contention, rollback).
+Tags are reusable categories, not sentence fragments: "deployment-manager"
+yes, "multi-field-updates" no; "resumability" yes, "resume-logic" no. No
+ticket numbers, IDs, people, or one-off names, and not the repo name.
+Reuse terms from the existing-tags list where they fit instead of
+inventing synonyms.
+
+Output ONLY a JSON object:
+{"initiatives": ["new-region-build", ...],
+ "tags": {"1": ["gcp", "new-region-build", "multi-tenant"], "2": [...]}}\
 """
 
 # Haiku 4.5 has a 200K-token context; keep the transcript well under it.
@@ -66,6 +79,8 @@ def _parse_tag_map(raw: str, count: int) -> dict[int, list[str]]:
         obj = json.loads(cleaned[start : end + 1])
     except json.JSONDecodeError as e:
         raise ExtractionFailed(f"tagger returned invalid JSON: {raw[:120]!r}") from e
+    if isinstance(obj, dict) and isinstance(obj.get("tags"), dict):
+        obj = obj["tags"]  # {"initiatives": [...], "tags": {...}}; also accept a bare map
     out: dict[int, list[str]] = {}
     for key, tags in obj.items() if isinstance(obj, dict) else ():
         try:

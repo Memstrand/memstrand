@@ -131,7 +131,7 @@ def test_extraction_parses_tags_and_uses_vocabulary(tmp_path, monkeypatch):
     distill_mod.distill_sessions(mem, ["s"])
     assert "Existing tags (reuse where they fit): gcp, new-region-build" in seen["user"]
     assert mem.graph.get_atom(mem._atom_id(LESSON)).tags == ["gcp", "new-region-build", "multi-tenant"]
-    assert "2-6 lowercase-kebab-case tags" in extract_mod.EXTRACTION_SYSTEM_PROMPT
+    assert "3-6 lowercase-kebab-case tags" in extract_mod.EXTRACTION_SYSTEM_PROMPT
 
 
 def test_retag_uses_the_session_transcript(tmp_path, monkeypatch):
@@ -143,7 +143,8 @@ def test_retag_uses_the_session_transcript(tmp_path, monkeypatch):
 
     def fake_chat(base_url, model, messages, timeout=120.0, api_key="local"):
         seen["system"], seen["user"] = messages[0]["content"], messages[1]["content"]
-        return '{"1": ["gcp", "new-region-build", "multi-tenant"], "2": ["ipv6", "Rate Limiting"], "9": ["x"]}'
+        return ('{"initiatives": ["new-region-build"], "tags": {"1": ["gcp", "new-region-build", "multi-tenant"], '
+                '"2": ["ipv6", "Rate Limiting"], "9": ["x"]}}')
 
     monkeypatch.setattr(tagging, "chat_completion", fake_chat)
     report = mem.retag([a.id, b.id], session_id="claude-code:s1")
@@ -191,3 +192,8 @@ def test_rest_client_and_cli(tmp_path, capsys, monkeypatch):
         assert "tags:       multi-tenant, ipv6" in out and "related (shared tags):" in out
         assert cli.main(["retag", "--dry-run"]) == 0
         assert "(no session)  2 memories" in capsys.readouterr().out
+
+
+def test_tag_map_accepts_bare_and_wrapped_shapes():
+    assert tagging._parse_tag_map('{"1": ["gcp"]}', 1) == {1: ["gcp"]}
+    assert tagging._parse_tag_map('```json\n{"initiatives": ["x"], "tags": {"1": ["aws"]}}\n```', 1) == {1: ["aws"]}

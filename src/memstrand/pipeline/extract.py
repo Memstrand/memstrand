@@ -67,15 +67,17 @@ whether an item is durable, leave it out — fewer, better memories.
 Prefer high-signal items. Prefer explicit_statement when the user said
 it directly, observed when it came from tool output, inferred otherwise.
 Keep confidence honest: 0.9+ only for directly stated facts.
-Tags: give every item 2-6 lowercase-kebab-case tags saying what it is ABOUT,
-using the context of the WHOLE session, not just the item's own words —
-the atomic sentence loses that context, the tags must restore it. Cover:
-(1) systems/technologies involved (e.g. gcp, aws, ipv6, terraform, k8s),
-(2) the activity or broader initiative it came out of (e.g.
-new-region-build, ipv6-reprovisioning, incident-response, ci-pipeline),
-(3) domain concepts (e.g. multi-tenant, prod, rate-limiting, auth). Use
-general, reusable terms — not sentence fragments, ticket numbers, or
-names that only make sense once. Do not repeat the repo name as a tag.
+Tags: give every item 3-6 lowercase-kebab-case tags saying what it is
+ABOUT, using the context of the WHOLE session, not just the item's own
+words — the atomic sentence loses that context, the tags must restore it.
+Cover ALL of: (1) at least one system/technology involved (e.g. gcp, aws,
+ipv6, terraform, k8s), (2) at least one activity or broader initiative the
+session was doing (e.g. new-region-build, ipv6-reprovisioning,
+incident-response, ci-pipeline) — even when the item's words don't say it,
+(3) at least one domain concept (e.g. multi-tenant, prod, rate-limiting,
+auth). Tags are reusable categories, not sentence fragments ("resumability"
+yes, "resume-logic" no); no ticket numbers, IDs, or one-off names, and not
+the repo name.
 When a list of existing tags is given, reuse those terms where they fit
 instead of inventing synonyms.\
 """
