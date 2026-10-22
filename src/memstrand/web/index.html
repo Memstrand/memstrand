@@ -240,6 +240,9 @@
   .tag-chip { border: 1px solid var(--border); border-radius: 999px; padding: 0.05rem 0.5rem;
     font-size: 0.75rem; background: var(--surface-2); cursor: pointer; }
   .tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .tag-chip.selected { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .tag-chip .count { opacity: 0.65; margin-left: 0.25em; }
+  .tag-filter { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
   .review-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.8rem; }
   .review-row .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; align-items: center; }
   .review-row select { min-width: 16rem; }
@@ -253,6 +256,7 @@
     <span class="sub" id="atom-count"></span>
     <button id="settings-btn" type="button" title="Set daemon token" aria-label="Settings" style="margin-left:auto;">⚙</button>
   </header>
+  <datalist id="tag-options"></datalist>
   <nav class="tabs">
     <button class="tab-btn active" data-tab="search">Search</button>
     <button class="tab-btn" data-tab="browse">Browse</button>
@@ -273,6 +277,12 @@
           <label class="checkbox">
             <input id="search-superseded" type="checkbox"> include superseded
           </label>
+        </div>
+        <div class="row filters">
+          <label>Tags (any of)
+            <input id="search-tag-input" type="text" list="tag-options" placeholder="type a tag, Enter to add" autocomplete="off">
+          </label>
+          <div id="search-tags" class="tag-filter"></div>
         </div>
         <div id="search-categories" class="chips"></div>
       </form>
@@ -340,10 +350,11 @@
           <input id="browse-host" type="text" placeholder="(optional)">
         </label>
         <label>Tag
-          <input id="browse-tag" type="text" placeholder="(optional)">
+          <input id="browse-tag" type="text" list="tag-options" placeholder="(optional)" autocomplete="off">
         </label>
         <div><button id="browse-apply">Apply</button></div>
       </div>
+      <div id="top-tags" class="tags" style="margin-bottom:0.6rem"></div>
       <div id="browse-list" class="results"></div>
       <div class="pager">
         <button id="browse-prev">◀ Prev</button>
@@ -609,6 +620,7 @@
       $("#atom-count").textContent = h.atoms + " atoms";
     } catch (e) { /* banner already shown by api() */ }
     refreshReviewCount();
+    loadTagCounts();
   }
   async function refreshReviewCount() {
     try {
@@ -686,7 +698,7 @@
   }
 
   // ---------- search ----------
-  const state = { searchCategories: new Set(), lastSearchPayload: null,
+  const state = { searchCategories: new Set(), searchTags: new Set(), tagCounts: [], lastSearchPayload: null,
     browse: { offset: 0, limit: 20, category: "", taskMode: "all", taskId: "", host: "", tag: "", total: 0 } };
 
   function buildCategoryChips() {
@@ -710,6 +722,7 @@
     const task = $("#search-task").value.trim();
     if (task) payload.task_id = task;
     if (state.searchCategories.size) payload.categories = Array.from(state.searchCategories);
+    if (state.searchTags.size) payload.tags = Array.from(state.searchTags);
     state.lastSearchPayload = payload;
     const container = $("#search-results");
     try {
@@ -793,7 +806,69 @@
     loadBrowse();
   });
 
+  // ---------- tags: autocomplete, search filter, top-tags strip ----------
+  async function loadTagCounts() {
+    try {
+      const data = await api("/api/tags?limit=500");
+      state.tagCounts = (data.tags || []).map((t) => [t.tag, t.count]);
+    } catch (e) { state.tagCounts = []; }
+    const dl = $("#tag-options");
+    clear(dl);
+    for (const [tag, count] of state.tagCounts) dl.appendChild(el("option", { value: tag, label: tag + " (" + count + ")" }));
+    renderTopTags();
+  }
+  function renderTopTags() {
+    const box = $("#top-tags");
+    clear(box);
+    const current = state.browse.tag;
+    for (const [tag, count] of state.tagCounts.slice(0, 30)) {
+      box.appendChild(el("span", {
+        class: "tag-chip" + (tag === current ? " selected" : ""),
+        title: tag === current ? "Clear tag filter" : "Browse memories tagged " + tag,
+        onclick: () => {
+          const next = tag === current ? "" : tag;
+          $("#browse-tag").value = next;
+          state.browse.tag = next;
+          state.browse.offset = 0;
+          loadBrowse();
+        },
+      }, "#" + tag, el("span", { class: "count", text: String(count) })));
+    }
+  }
+  function renderSearchTags() {
+    const box = $("#search-tags");
+    clear(box);
+    for (const tag of state.searchTags) {
+      box.appendChild(el("span", { class: "tag-chip selected", title: "Remove", onclick: () => {
+        state.searchTags.delete(tag);
+        renderSearchTags();
+        if ($("#search-query").value.trim()) runSearch();
+      } }, "#" + tag + " ✕"));
+    }
+  }
+  $("#search-tag-input").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();  // don't submit the search form
+    const raw = e.target.value.trim().toLowerCase().replace(/[\s_]+/g, "-");
+    if (!raw) return;
+    state.searchTags.add(raw);
+    e.target.value = "";
+    renderSearchTags();
+    if ($("#search-query").value.trim()) runSearch();
+  });
+  $("#search-tag-input").addEventListener("change", (e) => {
+    // picking a datalist suggestion fires `change` — add it right away
+    const raw = e.target.value.trim();
+    if (raw && state.tagCounts.some(([t]) => t === raw)) {
+      state.searchTags.add(raw);
+      e.target.value = "";
+      renderSearchTags();
+      if ($("#search-query").value.trim()) runSearch();
+    }
+  });
+
   async function loadBrowse() {
+    renderTopTags();
     const b = state.browse;
     const params = new URLSearchParams();
     if (b.category) params.set("category", b.category);
