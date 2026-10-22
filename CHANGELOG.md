@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.0] — unreleased
+## [0.3.0] — 2026-10-22
 
 ### Added (tags, review UI)
 
@@ -142,7 +142,9 @@ Scoping v2, phase 1 — see [docs/design/scoping-v2.md](docs/design/scoping-v2.m
   `backups/pre-scoping-v2-<ts>.jsonl` first. Legacy rows that don't move
   keep working as-is.
 
-## [0.2.2] — unreleased
+### Also in this release: deep-review fixes
+
+The changes below were originally slated for a 0.2.2 release, which never shipped separately; they are included in 0.3.0.
 
 ### Added
 
@@ -319,7 +321,6 @@ Scoping v2, phase 1 — see [docs/design/scoping-v2.md](docs/design/scoping-v2.m
   memstrand's inline annotations as authoritative for downstream users;
   confirmed included in the built wheel (`hatchling build --target
   wheel` + `unzip -l`).
-- Version bumped to 0.2.2.
 
 ## [0.2.1]
 

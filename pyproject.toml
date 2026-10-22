@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memstrand"
-version = "0.2.2"
+version = "0.3.0"
 description = "Local-first typed memory for AI agents. Zero API keys."
 readme = "README.md"
 license = { text = "MIT" }
