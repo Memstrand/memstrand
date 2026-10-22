@@ -1,0 +1,23 @@
+src/memstrand/api.py
+  s_cc0c7560faa1c4::t_9de0f4c59729c4 832-841,990,999,1002-1016
+src/memstrand/web/index.html
+  s_cc0c7560faa1c4::t_29a43b562cd9d8 1065-1070,1072
+tests/test_scope_review.py
+  s_cc0c7560faa1c4::t_b84ccea7ec28bb 281-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "9c5e3fcbb92360952895bde10fbbb62bf1aad0dd",
+  "prompts": {},
+  "sessions": {
+    "s_cc0c7560faa1c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82341cf2-b5bc-46b9-902b-a4076d385121",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
