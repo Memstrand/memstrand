@@ -167,6 +167,7 @@ def _cmd_remember(args) -> int:
             source=args.source,
             scopes=scopes,
             agent=agent_name("cli"),
+            tags=args.tags,
         )
         print(normalize_atom(atom)["id"])
     return 0
@@ -183,6 +184,7 @@ def _cmd_recall(args) -> int:
             limit=args.limit,
             include_superseded=args.include_superseded,
             scopes=_resolve_scope_args(mem, args.repos),
+            **({"tags": args.tags} if args.tags else {}),
         )
         if args.json:
             print(json.dumps(hits, indent=2))
@@ -194,6 +196,8 @@ def _cmd_recall(args) -> int:
             flag = "  (superseded)" if h.get("superseded") else ""
             print(f"{h['score']:.3f}  [{h['category']}] {h['content']}{flag}")
             bits = [f"id={h['id']}", f"scope={_scope_label(h)}"]
+            if h.get("tags"):
+                bits.append("tags=" + ",".join(h["tags"]))
             if h.get("source_ref"):
                 bits.append(f"source={h['source_ref']}")
             print(f"          {'  '.join(bits)}")
@@ -216,6 +220,7 @@ def _cmd_list(args) -> int:
             limit=args.limit,
             offset=args.offset,
             **({"agent": args.agent} if args.agent else {}),
+            **({"tag": args.tag} if args.tag else {}),
         )
         if args.json:
             print(json.dumps(items, indent=2))
@@ -225,7 +230,8 @@ def _cmd_list(args) -> int:
             return 0
         for a in items:
             flag = "  (superseded)" if a.get("superseded") else ""
-            print(f"{a['id']}  [{a['category']}] ({_scope_label(a)}) {a['content']}{flag}")
+            tags = f"  #{' #'.join(a['tags'])}" if a.get("tags") and args.show_tags else ""
+            print(f"{a['id']}  [{a['category']}] ({_scope_label(a)}) {a['content']}{flag}{tags}")
     return 0
 
 
@@ -252,6 +258,8 @@ def _cmd_show(args) -> int:
             print(f"agent:      {atom['agent']}")
         if atom.get("session_id"):
             print(f"session:    {atom['session_id']}  (memstrand session {atom['session_id']})")
+        if atom.get("tags"):
+            print(f"tags:       {', '.join(atom['tags'])}")
         if atom.get("source"):
             source_line = atom["source"]
             if atom.get("source_ref"):
@@ -263,6 +271,11 @@ def _cmd_show(args) -> int:
             print("superseded: yes")
         print()
         print(atom["content"])
+        related = mem.related(args.id, limit=8) if atom.get("tags") else []
+        if related:
+            print("\nrelated (shared tags):")
+            for r in related:
+                print(f"  {r['id']}  [{', '.join(r['shared_tags'])}] {r['content'][:110]}")
         neighbors = atom.get("neighbors") or []
         if neighbors:
             print("\nneighbors:")
@@ -552,6 +565,95 @@ def _cmd_search_sessions(args) -> int:
         print(f"{_fmt_ts(r.get('ts'))}  {r['session_id']}  {r['role']}")
         print(f"    {snippet}")
     print("\nfull conversation: memstrand session <session id>")
+    return 0
+
+
+def _cmd_tags(args) -> int:
+    with _memory_session() as mem:
+        scope = _resolve_scope_args(mem, [args.repo])[0] if args.repo else None
+        counts = mem.tag_counts(scope, args.limit)
+    if args.json:
+        print(json.dumps([{"tag": t, "count": n} for t, n in counts], indent=2))
+        return 0
+    if not counts:
+        print("(no tags yet — new memories get tags at extraction; `memstrand retag` tags existing ones)")
+        return 0
+    width = max(len(t) for t, _ in counts)
+    for t, n in counts:
+        print(f"{t:<{width}}  {n:>5}")
+    return 0
+
+
+def _cmd_tag(args) -> int:
+    with _memory_session() as mem:
+        if args.set is None and not args.add and not args.remove:
+            atom = mem.get(args.id)
+            if atom is None:
+                raise _CliError(f"no such memory: {args.id}")
+            tags = atom.get("tags") or []
+        else:
+            tags = normalize_atom(mem.set_tags(args.id, tags=args.set, add=args.add, remove=args.remove))["tags"]
+    print(", ".join(tags) if tags else "(no tags)")
+    return 0
+
+
+def _cmd_retag(args) -> int:
+    """Tag existing memories with the LLM, one source session per call
+    (its conversation is the context). Spends LLM tokens."""
+    with contextlib.closing(get_memory(timeout=900.0)) as mem:
+        atoms: list[dict] = []
+        offset = 0
+        while True:
+            page = mem.list(limit=1000, offset=offset)
+            atoms += page
+            offset += len(page)
+            if len(page) < 1000:
+                break
+        if args.missing_only:
+            atoms = [a for a in atoms if not a.get("tags")]
+        groups: dict[str | None, list[str]] = {}
+        for a in atoms:
+            groups.setdefault(a.get("session_id"), []).append(a["id"])
+        if args.session:
+            wanted = {mem.session_turns(ref, limit=0)["session_id"] for ref in args.session}
+            groups = {k: v for k, v in groups.items() if k in wanted}
+        order = sorted(groups, key=lambda k: (k is None, str(k)))
+        if args.limit is not None:
+            order = order[: args.limit]
+        if not order:
+            print("(nothing to tag)")
+            return 0
+        totals = {"atoms": 0, "tagged": 0, "errors": 0, "calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+        for i, sid in enumerate(order, start=1):
+            ids = groups[sid]
+            if args.dry_run:
+                print(f"[{i}/{len(order)}] {sid or '(no session)'}  {len(ids)} memories")
+                totals["atoms"] += len(ids)
+                continue
+            r = mem.retag(ids, session_id=sid)
+            u = r.get("usage") or {}
+            for key in ("atoms", "tagged"):
+                totals[key] += r.get(key, 0)
+            totals["errors"] += len(r.get("errors") or [])
+            for key in ("calls", "prompt_tokens", "completion_tokens"):
+                totals[key] += u.get(key, 0)
+            line = (f"[{i}/{len(order)}] {(sid or '(no session)')[:24]:<24} tagged {r.get('tagged', 0)}/{r.get('atoms', 0)}"
+                    f"  llm: {u.get('calls', 0)} calls, {u.get('prompt_tokens', 0):,} in / {u.get('completion_tokens', 0):,} out")
+            if r.get("errors"):
+                line += f"  error: {r['errors'][0].get('error', '')[:90]}"
+            print(line, flush=True)
+    if args.dry_run:
+        print(f"\n{len(order)} groups, {totals['atoms']} memories (dry run: no LLM calls)")
+        return 0
+    total = totals["prompt_tokens"] + totals["completion_tokens"]
+    print(f"\n{totals['tagged']}/{totals['atoms']} memories tagged, {totals['errors']} errors; LLM "
+          f"{totals['calls']} calls, {totals['prompt_tokens']:,} in + {totals['completion_tokens']:,} out = {total:,} tokens")
+    return 1 if totals["errors"] else 0
+
+
+def _cmd_reindex(args) -> int:
+    with contextlib.closing(get_memory(timeout=900.0)) as mem:
+        print(json.dumps(mem.reindex(), indent=2))
     return 0
 
 
@@ -870,6 +972,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", default=None)
     p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
     p.add_argument("--global", dest="global_scope", action="store_true", help="also global (with --repo)")
+    p.add_argument("--tag", dest="tags", action="append", default=None, help="topic tag (repeatable)")
     p.add_argument("--host", default=None)
     p.add_argument("--ttl-days", type=float, default=None)
     p.add_argument("--source", default=None)
@@ -879,6 +982,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("query")
     p.add_argument("--task", default=None)
     p.add_argument("--repo", dest="repos", action="append", default=None, help=_REPO_HELP)
+    p.add_argument("--tag", dest="tags", action="append", default=None,
+                   help="only memories with this tag (repeatable: any of them)")
     p.add_argument("--host", default=None)
     p.add_argument(
         "--category", dest="categories", action="append", default=None,
@@ -894,6 +999,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", default=None)
     p.add_argument("--repo", default=None, help="only memories in this scope (key, short name, or path)")
     p.add_argument("--agent", default=None, help='only memories written by this agent, e.g. "claude-code@myhost"')
+    p.add_argument("--tag", default=None, help="only memories with this tag")
+    p.add_argument("--show-tags", action="store_true", help="print each memory's tags")
     p.add_argument("--global", dest="global_only", action="store_true", help="only global (task-less) memories")
     p.add_argument("--limit", type=int, default=100)
     p.add_argument("--offset", type=int, default=0)
@@ -1001,6 +1108,29 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=_cmd_search_sessions)
+
+    p = sub.add_parser("tags", help="most-used tags")
+    p.add_argument("--repo", default=None, help="only among memories in this scope")
+    p.add_argument("--limit", type=int, default=100)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=_cmd_tags)
+
+    p = sub.add_parser("tag", help="show or change a memory's tags")
+    p.add_argument("id")
+    p.add_argument("--set", action="append", default=None, help="replace all tags (repeatable)")
+    p.add_argument("--add", action="append", default=None, help="add a tag (repeatable)")
+    p.add_argument("--remove", action="append", default=None, help="remove a tag (repeatable)")
+    p.set_defaults(func=_cmd_tag)
+
+    p = sub.add_parser("retag", help="LLM-tag existing memories using their source conversations")
+    p.add_argument("--missing-only", action="store_true", help="only memories that have no tags yet")
+    p.add_argument("--session", action="append", default=None, help="only these sessions (repeatable)")
+    p.add_argument("--limit", type=int, default=None, help="at most N sessions")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=_cmd_retag)
+
+    p = sub.add_parser("reindex", help="rebuild vector + keyword indexes from the graph store (no LLM)")
+    p.set_defaults(func=_cmd_reindex)
 
     p = sub.add_parser("review", help="memories waiting for you to decide their scope")
     p.add_argument("--limit", type=int, default=20)

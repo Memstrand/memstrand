@@ -140,6 +140,7 @@ class RemoteMemory:
         source_ref: str | None = None,
         agent: str | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> dict:
         payload = _drop_none(
             {
@@ -155,6 +156,7 @@ class RemoteMemory:
                 "source_ref": source_ref,
                 "agent": agent,
                 "scopes": scopes,
+                "tags": tags,
             }
         )
         return self._request("POST", "/api/remember", json=payload)
@@ -221,6 +223,7 @@ class RemoteMemory:
         include_superseded: bool = False,
         track: bool = True,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> list[dict]:
         # `track` is a local-only internal knob (judge/consolidation callers);
         # the daemon always tracks recall side effects, so it's not sent.
@@ -234,6 +237,7 @@ class RemoteMemory:
                 "limit": limit,
                 "include_superseded": include_superseded,
                 "scopes": scopes,
+                "tags": tags,
             }
         )
         result = self._request("POST", "/api/recall", json=payload)
@@ -265,6 +269,7 @@ class RemoteMemory:
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> list[dict]:
         # task_id is kept even when "" (absent = all tasks, "" = global only).
         params = _drop_none(
@@ -273,6 +278,7 @@ class RemoteMemory:
                 "task_id": task_id,
                 "host": host,
                 "agent": agent,
+                "tag": tag,
                 "limit": limit,
                 "offset": offset,
             }
@@ -358,6 +364,29 @@ class RemoteMemory:
         params = _drop_none({"q": query, "limit": limit, "session": session})
         result = self._request("GET", "/api/turns/search", params=params)
         return result.get("results", []) if result else []
+
+    def set_tags(
+        self, atom_id: str, tags: list[str] | None = None, add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> dict:
+        payload = _drop_none({"set": tags, "add": add, "remove": remove})
+        return self._request("POST", f"/api/atoms/{atom_id}/tags", json=payload)
+
+    def related(self, atom_id: str, min_shared: int = 2, limit: int = 10) -> list[dict]:
+        result = self._request(
+            "GET", f"/api/atoms/{atom_id}/related", params={"min_shared": min_shared, "limit": limit}
+        )
+        return result.get("related", []) if result else []
+
+    def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]:
+        result = self._request("GET", "/api/tags", params=_drop_none({"scope": task_id, "limit": limit}))
+        return [(r["tag"], r["count"]) for r in (result or {}).get("tags", [])]
+
+    def retag(self, atom_ids: list[str], session_id: str | None = None) -> dict:
+        return self._request("POST", "/api/retag", json=_drop_none({"atom_ids": atom_ids, "session_id": session_id})) or {}
+
+    def reindex(self) -> dict:
+        return self._request("POST", "/api/reindex") or {}
 
     def rename_scope(self, old: str, new: str) -> int:
         result = self._request("POST", "/api/scopes/rename", json={"old": old, "new": new})

@@ -57,6 +57,7 @@ class GraphStore(Protocol):
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> list[MemoryAtom]: ...  # newest created_at first. None = no filter; task_id = scope membership ("" = global members)
     def count_atoms(
         self,
@@ -64,7 +65,12 @@ class GraphStore(Protocol):
         task_id: str | None = None,
         host: str | None = None,
         agent: str | None = None,
-    ) -> int: ...  # same filter semantics as list_atoms, without the limit/offset/ordering
+        tag: str | None = None,
+    ) -> int: ...  # same filter semantics as list_atoms
+    def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]: ...
+    def related_by_tags(
+        self, atom_id: str, min_shared: int = 2, limit: int = 20
+    ) -> list[tuple[str, int]]: ...  # (atom_id, shared tag count), most shared first, without the limit/offset/ordering
     def all_edges(self) -> list[MemoryEdge]: ...
     def neighbors(
         self, atom_id: str, relation: str | None = None, depth: int = 1

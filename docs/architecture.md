@@ -71,7 +71,17 @@ ledger. An atom carries a *set* of scopes (repo keys, named tasks, and/or
 the global member — see [design/scoping-v2.md](design/scoping-v2.md)):
 remembering identical content again merges into the same atom, widening its
 scope set to the union, so a fact learned in a second repo becomes visible
-there without a duplicate. `log_turn()` is just an append — no embedding,
+there without a duplicate.
+
+Each memory also carries **tags** — what it is about (systems, the
+activity or initiative it came out of, domain concepts), assigned at
+extraction from the whole conversation, since the atomic sentence loses
+that context. Unlike scopes, tags never restrict visibility: they're
+embedded together with the content and indexed for keyword search, so
+"gcp new region build" finds a lesson whose own words never say that, and
+memories sharing tags are related to each other. The graph store's
+`atom_tags` table is the source of truth; the vector payload and keyword
+index are derived and can be rebuilt with `memstrand reindex`. `log_turn()` is just an append — no embedding,
 no extraction — so a live chat session costs nothing until it's distilled.
 
 ## Distillation (`improve()`)

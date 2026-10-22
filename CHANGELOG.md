@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.3.0] — unreleased
 
+### Added (tags, review UI)
+
+- **Tags.** Every memory can carry 2-6 topic tags (systems, the activity or
+  initiative it came out of, domain concepts). Extraction assigns them from
+  the whole conversation and is shown the existing tag vocabulary to reuse
+  terms. Tags are embedded with the content and keyword-indexed (so
+  context the sentence lost is still searchable), filterable (`recall
+  --tag`, `list --tag`, `?tag=`), and relate memories (`memstrand show`,
+  `GET /api/atoms/{id}/related`: memories sharing 2+ tags). Stored in an
+  indexed `atom_tags` table (source of truth); Kuzu stores them encoded.
+- `memstrand retag`: LLM-tag existing memories, one call per source session
+  with its conversation as context. `memstrand tag <id>`, `memstrand tags`.
+- `memstrand reindex` (REST `POST /api/reindex`): rebuild the vector and
+  keyword indexes from the graph store; the keyword index is rebuilt
+  automatically when its schema changes.
+- Web UI: a **Review** tab (answer scope questions any time, with a pending
+  count), tag chips on memories (click to browse by tag), a tag filter in
+  Browse, tag editing and related memories in the detail drawer.
+
 ### Added (backfill)
 
 - `memstrand hook backfill`: distill existing Claude Code transcripts from

@@ -99,13 +99,16 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         session_id: str | None = None,
         source: str | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """Store one atomic, durable memory. Call this as soon as the user
         states a fact, preference, decision, instruction, or commitment —
         not for chit-chat or throwaway context. One atomic fact per call;
         split compound statements into separate calls. `scopes` lists the
         repos/tasks it applies to (e.g. ["github.com/org/repo"]); omit both
-        it and `task_id` for a global memory."""
+        it and `task_id` for a global memory. `tags`: 2-6 kebab-case topics
+        it's about (systems, activity/initiative, domain), e.g.
+        ["gcp", "new-region-build", "multi-tenant"]."""
         atom = get_mem().remember(
             content,
             category=category,
@@ -118,6 +121,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
             source=source,
             scopes=scopes,
             agent=agent_name("mcp"),
+            tags=tags,
         )
         return {
             "id": atom.id, "category": atom.category.value,
@@ -134,6 +138,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
         limit: int = 10,
         include_superseded: bool = False,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Scoped hybrid (semantic + keyword) recall. Call this at the
         start of a task and whenever you need context the user may have
@@ -149,6 +154,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
             limit=limit,
             include_superseded=include_superseded,
             scopes=scopes,
+            tags=tags,
         )
         return [
             {
@@ -160,6 +166,7 @@ def build_mcp(get_mem: Callable[[], Memory]) -> MCPServer:
                 "confidence": h["confidence"],
                 "task_id": h["task_id"],
                 "scopes": h["scopes"],
+                "tags": h["tags"],
                 "source_ref": h["source_ref"],
                 "contradictions": [c["content"] for c in h["contradictions"]],
             }

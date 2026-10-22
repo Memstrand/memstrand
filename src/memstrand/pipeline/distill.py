@@ -166,6 +166,23 @@ def _queue_review_if_needed(mem: Memory, cand: dict, atom, labels: dict[str, str
     return False
 
 
+TAG_VOCABULARY_SIZE = 60
+
+
+def _tag_vocabulary(mem: Memory, scope_keys: list[str]) -> list[str]:
+    """Most-used existing tags among the session's scopes plus global
+    memories, so extraction reuses terms instead of inventing synonyms."""
+    counts_fn = getattr(mem.graph, "tag_counts", None)
+    if counts_fn is None:
+        return []
+    totals: dict[str, int] = {}
+    for scope in [*scope_keys, GLOBAL_SCOPE]:
+        for tag, n in counts_fn(task_id=scope, limit=TAG_VOCABULARY_SIZE):
+            totals[tag] = totals.get(tag, 0) + n
+    ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [t for t, _ in ranked[:TAG_VOCABULARY_SIZE]]
+
+
 def _session_candidates(turns: list[dict]) -> tuple[str | None, list[str]]:
     """(primary scope, ordered candidate scope keys): the session's own
     scope first, then every scope any turn touched."""
@@ -420,6 +437,8 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
     session_agent = next((t.get("agent") for t in turns if t.get("agent")), None)
     labels = _scope_labels(candidate_keys) if len(candidate_keys) > 1 else {}
 
+    vocabulary = _tag_vocabulary(mem, candidate_keys)
+    vocab_kw = {"tag_vocabulary": vocabulary} if vocabulary else {}
     try:
         with usage.purpose("extract"):
             if labels:
@@ -430,10 +449,12 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 ]
                 candidates = extract_atoms(
                     annotated, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key,
-                    scope_candidates=[label_of[k] for k in candidate_keys],
+                    scope_candidates=[label_of[k] for k in candidate_keys], **vocab_kw,
                 )
             else:
-                candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
+                candidates = extract_atoms(
+                    turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key, **vocab_kw
+                )
     except Exception as e:  # noqa: BLE001 - fail closed: no promotion, session retried
         report["errors"].append({"session": session_id, "error": str(e)})
         _note_extraction_failure(mem, session_id, max(t["id"] for t in turns), report)
@@ -464,6 +485,8 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 else:
                     mem.set_scopes(atom_id, add=target_scopes, resolve_review=False)
                     report["scope_widened"] += 1
+                if cand.get("tags") and not set(cand["tags"]) <= set(existing.tags):
+                    mem.set_tags(atom_id, add=cand["tags"])
                 continue
             similar = [
                 h
@@ -495,6 +518,7 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 session_id=session_id,
                 scopes=target_scopes,
                 agent=session_agent,
+                tags=cand.get("tags") or None,
             )
             report["atoms"] += 1
             if _queue_review_if_needed(mem, cand, atom, labels):

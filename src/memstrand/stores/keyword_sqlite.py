@@ -21,7 +21,10 @@ from ..schema import MemoryAtom, ScopedQuery, encode_scopes
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
-_SCHEMA_COLS = "content, atom_id UNINDEXED, task_id UNINDEXED, host UNINDEXED, category UNINDEXED, expires_at UNINDEXED"
+_SCHEMA_COLS = (
+    "content, tags, atom_id UNINDEXED, task_id UNINDEXED, host UNINDEXED, "
+    "category UNINDEXED, expires_at UNINDEXED"
+)
 
 
 def _sanitize_query(text: str) -> str:
@@ -78,7 +81,14 @@ class SqliteKeywordIndex:
             secure_file(f"{path}-shm")
 
     def _init_schema(self) -> None:
+        # `needs_rebuild`: the table was (re)created over an older schema, so
+        # its rows must be repopulated from the graph store (derived data).
+        self.needs_rebuild = False
         with self._lock:
+            cols = {row[1] for row in self.conn.execute("PRAGMA table_info(atoms_fts)")}
+            if cols and "tags" not in cols:
+                self.conn.execute("DROP TABLE atoms_fts")
+                self.needs_rebuild = True
             try:
                 self.conn.execute(
                     f"""CREATE VIRTUAL TABLE IF NOT EXISTS atoms_fts USING fts5(
@@ -98,10 +108,11 @@ class SqliteKeywordIndex:
         with self._lock:
             self.conn.execute("DELETE FROM atoms_fts WHERE atom_id = ?", (atom.id,))
             self.conn.execute(
-                "INSERT INTO atoms_fts(content, atom_id, task_id, host, category, expires_at) "
-                "VALUES (?,?,?,?,?,?)",
+                "INSERT INTO atoms_fts(content, tags, atom_id, task_id, host, category, expires_at) "
+                "VALUES (?,?,?,?,?,?,?)",
                 (
                     atom.content,
+                    " ".join(atom.tags),  # searchable words; exact tag filtering is the graph's job
                     atom.id,
                     encode_scopes(atom.scopes),
                     atom.host or "",

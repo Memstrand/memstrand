@@ -15,13 +15,14 @@ import re
 
 import httpx
 
-from ..schema import Category, Provenance
+from ..schema import Category, Provenance, normalize_tags
 
 EXTRACTION_SYSTEM_PROMPT = """\
 You extract durable memories from a conversation session.
 Emit a JSON list. Each item: {"category": <one of the 13 categories>,
 "content": "<atomic fact>", "provenance": "<how learned>",
-"confidence": <0.0-1.0>, "scope": "global" | "task"}.
+"confidence": <0.0-1.0>, "scope": "global" | "task",
+"tags": ["<tag>", ...]}.
 Valid categories: instruction, fact, decision, goal, commitment,
 preference, relationship, context, event, learning, observation,
 artifact, error.
@@ -65,7 +66,18 @@ anything that only describes what happened in this session. When unsure
 whether an item is durable, leave it out — fewer, better memories.
 Prefer high-signal items. Prefer explicit_statement when the user said
 it directly, observed when it came from tool output, inferred otherwise.
-Keep confidence honest: 0.9+ only for directly stated facts.\
+Keep confidence honest: 0.9+ only for directly stated facts.
+Tags: give every item 2-6 lowercase-kebab-case tags saying what it is ABOUT,
+using the context of the WHOLE session, not just the item's own words —
+the atomic sentence loses that context, the tags must restore it. Cover:
+(1) systems/technologies involved (e.g. gcp, aws, ipv6, terraform, k8s),
+(2) the activity or broader initiative it came out of (e.g.
+new-region-build, ipv6-reprovisioning, incident-response, ci-pipeline),
+(3) domain concepts (e.g. multi-tenant, prod, rate-limiting, auth). Use
+general, reusable terms — not sentence fragments, ticket numbers, or
+names that only make sense once. Do not repeat the repo name as a tag.
+When a list of existing tags is given, reuse those terms where they fit
+instead of inventing synonyms.\
 """
 
 # Categories that default to global scope when the model omits "scope".
@@ -208,6 +220,7 @@ def _valid_atom(item: dict) -> dict | None:
         "provenance": provenance,
         "confidence": confidence,
         "scope": scope,
+        "tags": normalize_tags(item.get("tags") if isinstance(item.get("tags"), list) else []),
     }
     if scope == "ambiguous":
         atom["candidates"] = candidates
@@ -221,6 +234,7 @@ def extract_atoms(
     timeout: float = 180.0,
     api_key: str = "local",
     scope_candidates: list[str] | None = None,
+    tag_vocabulary: list[str] | None = None,
 ) -> list[dict]:
     """Turns -> validated candidate atom dicts. LLM call goes here.
 
@@ -243,6 +257,8 @@ def extract_atoms(
             for i, name in enumerate(scope_candidates, start=1)
         )
         header = f"Repos in this session:\n{listed}\n\n"
+    if tag_vocabulary:
+        header += f"Existing tags (reuse where they fit): {', '.join(tag_vocabulary)}\n\n"
     raw = chat_completion(
         llm_base_url,
         llm_model,

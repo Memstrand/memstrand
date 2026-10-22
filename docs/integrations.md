@@ -168,7 +168,14 @@ saved narrowly (never global) and queued. The `UserPromptSubmit` hook then
 adds a short "scope check" asking Claude to put the question to you (at
 most 3 at a time, each once per session, and it stops asking after 5
 sessions) and to record your answer with `memstrand scope <id> …`. You can
-also run `memstrand review` yourself.
+also answer them in the web UI's **Review** tab, or run `memstrand review`
+— whichever you answer first resolves it everywhere.
+
+Memories carry tags (e.g. `gcp`, `new-region-build`, `multi-tenant`) that
+restore the context an extracted sentence loses; click a tag in the web UI
+to browse everything about it, or use `memstrand list --tag gcp`. To tag
+memories created before tags existed, run `memstrand retag --missing-only`
+(one LLM call per source session, using its conversation as context).
 
 The context hook also reads paths in your prompt: asking from `~/.claude`
 to "read ~/projects/memstrand …" injects memstrand's memories alongside

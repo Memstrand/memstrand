@@ -91,7 +91,8 @@ def _atom_to_params(atom: MemoryAtom) -> tuple:
 
 
 def _atom_filter_clause(
-    category: str | None, task_id: str | None, host: str | None, agent: str | None = None
+    category: str | None, task_id: str | None, host: str | None, agent: str | None = None,
+    tag: str | None = None,
 ) -> tuple[str, list]:
     """Shared WHERE-clause builder for list_atoms/count_atoms so the two
     can never drift out of sync on filter semantics (fix #10).
@@ -108,6 +109,9 @@ def _atom_filter_clause(
         else:
             clauses.append(f"{col} = ?")
             params.append(value)
+    if tag is not None:
+        clauses.append("id IN (SELECT atom_id FROM atom_tags WHERE tag = ?)")
+        params.append(tag)
     if task_id is not None:
         if task_id == "":
             clauses.append("(task_id IS NULL OR task_id = '' OR instr(task_id, '||') > 0)")
@@ -175,7 +179,33 @@ class SqliteGraphStore:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_atoms_source ON atoms(source)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_atoms_created ON atoms(created_at)")
+            # tags: the source of truth (vector payload + keyword index are derived)
+            self.conn.execute(
+                """CREATE TABLE IF NOT EXISTS atom_tags(
+                    atom_id TEXT NOT NULL, tag TEXT NOT NULL,
+                    PRIMARY KEY (atom_id, tag))"""
+            )
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_atom_tags_tag ON atom_tags(tag)")
             self.conn.commit()
+
+    def _attach_tags(self, atoms: list[MemoryAtom]) -> list[MemoryAtom]:
+        """Fill `tags` from atom_tags (caller holds the lock)."""
+        if not atoms:
+            return atoms
+        by_id: dict[str, list[str]] = {}
+        ids = [a.id for a in atoms]
+        for start in range(0, len(ids), 900):
+            part = ids[start : start + 900]
+            rows = self.conn.execute(
+                f"SELECT atom_id, tag FROM atom_tags WHERE atom_id IN ({', '.join('?' for _ in part)}) "
+                "ORDER BY rowid",
+                part,
+            ).fetchall()
+            for aid, tag in rows:
+                by_id.setdefault(aid, []).append(tag)
+        for atom in atoms:
+            atom.tags = by_id.get(atom.id, [])
+        return atoms
 
     # -- atoms ----------------------------------------------------------------
 
@@ -189,6 +219,11 @@ class SqliteGraphStore:
                 f"ON CONFLICT(id) DO UPDATE SET {updates}",
                 _atom_to_params(atom),
             )
+            self.conn.execute("DELETE FROM atom_tags WHERE atom_id=?", (atom.id,))
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO atom_tags(atom_id, tag) VALUES (?,?)",
+                [(atom.id, t) for t in atom.tags],
+            )
             self.conn.commit()
 
     def get_atom(self, atom_id: str) -> MemoryAtom | None:
@@ -197,7 +232,7 @@ class SqliteGraphStore:
             row = self.conn.execute(
                 f"SELECT {cols} FROM atoms WHERE id=?", (atom_id,)
             ).fetchone()
-        return _row_to_atom(row) if row else None
+            return self._attach_tags([_row_to_atom(row)])[0] if row else None
 
     def get_atoms(self, atom_ids: list[str]) -> dict[str, MemoryAtom]:
         if not atom_ids:
@@ -208,7 +243,8 @@ class SqliteGraphStore:
             rows = self.conn.execute(
                 f"SELECT {cols} FROM atoms WHERE id IN ({placeholders})", atom_ids
             ).fetchall()
-        return {row[0]: _row_to_atom(row) for row in rows}
+            atoms = self._attach_tags([_row_to_atom(row) for row in rows])
+        return {a.id: a for a in atoms}
 
     def list_atoms(
         self,
@@ -218,16 +254,17 @@ class SqliteGraphStore:
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> list[MemoryAtom]:
         cols = ", ".join(ATOM_COLUMNS)
-        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent, tag=tag)
         params = [*params, limit, offset]
         with self._lock:
             rows = self.conn.execute(
                 f"SELECT {cols} FROM atoms {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
-        return [_row_to_atom(row) for row in rows]
+            return self._attach_tags([_row_to_atom(row) for row in rows])
 
     def count_atoms(
         self,
@@ -235,8 +272,9 @@ class SqliteGraphStore:
         task_id: str | None = None,
         host: str | None = None,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> int:
-        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent, tag=tag)
         with self._lock:
             row = self.conn.execute(f"SELECT COUNT(*) FROM atoms {where}", params).fetchone()
         return int(row[0])
@@ -280,10 +318,37 @@ class SqliteGraphStore:
         pruned by consolidation, but an explicit forget() removes."""
         with self._lock:
             self.conn.execute("DELETE FROM atoms WHERE id=?", (atom_id,))
+            self.conn.execute("DELETE FROM atom_tags WHERE atom_id=?", (atom_id,))
             self.conn.execute(
                 "DELETE FROM edges WHERE source_id=? OR target_id=?", (atom_id, atom_id)
             )
             self.conn.commit()
+
+    # -- tags -------------------------------------------------------------------
+
+    def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]:
+        """Most-used tags, optionally only among atoms in scope `task_id`
+        (membership, same semantics as list_atoms)."""
+        where, params = _atom_filter_clause(None, task_id, None)
+        sql = "SELECT t.tag, COUNT(*) FROM atom_tags t"
+        if where:
+            sql += f" WHERE t.atom_id IN (SELECT id FROM atoms {where})"
+        sql += " GROUP BY t.tag ORDER BY COUNT(*) DESC, t.tag LIMIT ?"
+        with self._lock:
+            return [(t, n) for t, n in self.conn.execute(sql, [*params, limit]).fetchall()]
+
+    def related_by_tags(self, atom_id: str, min_shared: int = 2, limit: int = 20) -> list[tuple[str, int]]:
+        """(atom_id, shared tag count) for atoms sharing >= min_shared tags
+        with `atom_id`, most shared first."""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT o.atom_id, COUNT(*) AS shared FROM atom_tags s
+                   JOIN atom_tags o ON o.tag = s.tag AND o.atom_id != s.atom_id
+                   WHERE s.atom_id = ? GROUP BY o.atom_id HAVING shared >= ?
+                   ORDER BY shared DESC, o.atom_id LIMIT ?""",
+                (atom_id, min_shared, limit),
+            ).fetchall()
+        return [(aid, n) for aid, n in rows]
 
     # -- edges ------------------------------------------------------------------
 

@@ -8,6 +8,7 @@ throws away.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import Enum
@@ -65,6 +66,34 @@ def scopes_visible(atom_scopes: Iterable[str], query_scopes: Iterable[str]) -> b
     shares at least one scope with the query."""
     atom_set = set(atom_scopes)
     return GLOBAL_SCOPE in atom_set or bool(atom_set & set(query_scopes))
+
+
+# -- tags ---------------------------------------------------------------------
+#
+# Tags say what a memory is ABOUT (systems, activities, domain concepts,
+# the initiative it belongs to) — context the atomic sentence lost when it
+# was extracted from a conversation. Unlike scopes they never filter what a
+# query can see; they feed search (embedded text, keyword index) and
+# relate memories to each other (shared tags).
+
+MAX_TAGS = 8
+_TAG_INVALID = re.compile(r"[^a-z0-9.+#-]+")
+
+
+def normalize_tags(tags: Iterable[str | None] | None) -> list[str]:
+    """Lowercase kebab-case, deduped, order kept, at most MAX_TAGS; empty
+    or over-long (>40 chars) entries dropped. "Google Cloud" -> "google-cloud"."""
+    out: list[str] = []
+    for raw in tags or ():
+        if not isinstance(raw, str):
+            continue
+        tag = _TAG_INVALID.sub("-", raw.strip().lower().replace("_", "-").replace(" ", "-")).strip("-.")
+        tag = re.sub(r"-{2,}", "-", tag)
+        if 1 < len(tag) <= 40 and tag not in out:
+            out.append(tag)
+        if len(out) >= MAX_TAGS:
+            break
+    return out
 
 
 def _legacy_task_id_to_scopes(data, *, query: bool):
@@ -147,6 +176,7 @@ class MemoryAtom(BaseModel):
     scopes: list[str] = Field(default_factory=lambda: [GLOBAL_SCOPE])
     host: str | None = None
     agent: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
     # lifecycle
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -181,6 +211,17 @@ class MemoryAtom(BaseModel):
     @classmethod
     def _normalize_scopes(cls, v):
         return normalize_scopes(v)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v):
+        return normalize_tags(v)
+
+    @property
+    def embed_text(self) -> str:
+        """What gets embedded: the content, plus its tags as topic context
+        so semantic recall matches the situation, not just the sentence."""
+        return f"{self.content}\nTopics: {', '.join(self.tags)}" if self.tags else self.content
 
     @property
     def is_global(self) -> bool:
@@ -217,6 +258,8 @@ class ScopedQuery(BaseModel):
     session_id: str | None = None
     # the query's active scopes; global atoms are always visible on top
     scopes: list[str] = Field(default_factory=list)
+    # optional: only atoms carrying at least one of these tags (exact)
+    tags: list[str] = Field(default_factory=list)
     host: str | None = None
     categories: list[Category] | None = None
     limit: int = 10

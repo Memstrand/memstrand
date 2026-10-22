@@ -24,7 +24,11 @@
 | `backup` / `restore` | timestamped backup, merge-restore |
 | `scope <id>` | show or change which repos/tasks a memory applies to |
 | `scopes` / `scopes rename <old> <new>` | known scopes with counts / re-key one scope |
-| `review` | memories waiting for you to decide their scope |
+| `review` | memories waiting for you to decide their scope (also a tab in the web UI) |
+| `tags` | most-used tags (`--repo` to narrow) |
+| `tag <id>` | show or change a memory's tags (`--set`, `--add`, `--remove`) |
+| `retag` | LLM-tag existing memories using their source conversations |
+| `reindex` | rebuild vector + keyword indexes from the graph store (no LLM) |
 | `session <id>` | print a session's logged conversation (full id, Claude Code UUID, or unique prefix) |
 | `search-sessions <query>` | full-text search over logged session turns |
 | `stats` | atom/edge/session counts, by category and task |
@@ -89,6 +93,14 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
   `--global`, `--keep` (confirm as-is). Any of these resolves a pending
   scope review. Removing every scope is refused — use `forget`.
 - `review`: `--limit`, `--json`
+- `remember`: `--tag` (repeatable). `recall`: `--tag` (repeatable; any of
+  them, exact). `list`: `--tag`, `--show-tags`. `show` prints tags and
+  memories sharing 2+ tags.
+- `retag`: `--missing-only`, `--session` (repeatable), `--limit N`
+  (sessions), `--dry-run`. One LLM call per source session, with the
+  session's logged conversation as context (memories with no session are
+  tagged from their text, in batches); replaces each memory's tags.
+  Prints tokens per session.
 - `session <id>`: `--limit`, `--json`. `memstrand show <id>` prints each
   memory's source session.
 - `search-sessions <query>`: `--session`, `--limit`, `--json`. Every word
@@ -126,6 +138,10 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
 `POST /consolidate`, `POST /ingest`, `GET /export`, `POST /import`,
 `POST /forget_source`, `POST /atoms/{id}/scopes` (`{"set"|"add"|"remove": [...]}`),
 `GET /sessions/{id}/turns` (`?limit=`), `GET /turns/search` (`?q=&limit=&session=`),
+`POST /atoms/{id}/tags` (`{"set"|"add"|"remove": [...]}`), `GET /atoms/{id}/related`
+(`?min_shared=&limit=`), `GET /tags` (`?scope=&limit=`), `POST /retag`
+(`{"atom_ids": [...], "session_id"?}`), `POST /reindex`, `tags` on
+`remember`/`recall`, `?tag=` on `GET /atoms`,
 `GET /scopes`, `POST /scopes/rename` (`{"old","new"}`), `GET /reviews`
 (`?limit=`, read-only), `POST /reviews` (`{"limit","session"}`: each review
 returned once per session and counted as shown), and `{"keep": true}` on
