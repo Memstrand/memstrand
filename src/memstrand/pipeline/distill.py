@@ -166,6 +166,23 @@ def _queue_review_if_needed(mem: Memory, cand: dict, atom, labels: dict[str, str
     return False
 
 
+TAG_VOCABULARY_SIZE = 60
+
+
+def _tag_vocabulary(mem: Memory, scope_keys: list[str]) -> list[str]:
+    """Most-used existing tags among the session's scopes plus global
+    memories, so extraction reuses terms instead of inventing synonyms."""
+    counts_fn = getattr(mem.graph, "tag_counts", None)
+    if counts_fn is None:
+        return []
+    totals: dict[str, int] = {}
+    for scope in [*scope_keys, GLOBAL_SCOPE]:
+        for tag, n in counts_fn(task_id=scope, limit=TAG_VOCABULARY_SIZE):
+            totals[tag] = totals.get(tag, 0) + n
+    ranked = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [t for t, _ in ranked[:TAG_VOCABULARY_SIZE]]
+
+
 def _session_candidates(turns: list[dict]) -> tuple[str | None, list[str]]:
     """(primary scope, ordered candidate scope keys): the session's own
     scope first, then every scope any turn touched."""
@@ -374,6 +391,39 @@ def _enforce_global_trust_boundary(
     return candidates
 
 
+MAX_EXTRACTION_FAILURES = 3
+
+
+def _failure_key(session_id: str) -> str:
+    return f"extract_failures:{session_id}"
+
+
+def _note_extraction_failure(mem: Memory, session_id: str, last_turn_id: int, report: dict) -> None:
+    """Count consecutive extraction failures for a session. After
+    MAX_EXTRACTION_FAILURES the turns are marked distilled anyway, so a
+    session the extractor keeps choking on can't burn LLM tokens on every
+    consolidation run forever (its raw turns stay searchable)."""
+    get_meta = getattr(mem.sessions, "get_meta", None)
+    set_meta = getattr(mem.sessions, "set_meta", None)
+    if get_meta is None or set_meta is None:
+        return
+    failures = int(get_meta(_failure_key(session_id)) or 0) + 1
+    if failures >= MAX_EXTRACTION_FAILURES:
+        mem.sessions.mark_distilled(session_id, last_turn_id)
+        set_meta(_failure_key(session_id), "0")
+        report["errors"].append(
+            {"session": session_id, "error": f"giving up after {failures} failed extractions; turns kept"}
+        )
+    else:
+        set_meta(_failure_key(session_id), str(failures))
+
+
+def _clear_extraction_failures(mem: Memory, session_id: str) -> None:
+    get_meta = getattr(mem.sessions, "get_meta", None)
+    if get_meta is not None and get_meta(_failure_key(session_id)) not in (None, "0"):
+        mem.sessions.set_meta(_failure_key(session_id), "0")
+
+
 def _distill_one_session(mem: Memory, session_id: str) -> dict:
     report: dict = {
         "session": session_id, "atoms": 0, "edges": 0, "contradictions": 0,
@@ -387,6 +437,8 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
     session_agent = next((t.get("agent") for t in turns if t.get("agent")), None)
     labels = _scope_labels(candidate_keys) if len(candidate_keys) > 1 else {}
 
+    vocabulary = _tag_vocabulary(mem, candidate_keys)
+    vocab_kw = {"tag_vocabulary": vocabulary} if vocabulary else {}
     try:
         with usage.purpose("extract"):
             if labels:
@@ -397,13 +449,17 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 ]
                 candidates = extract_atoms(
                     annotated, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key,
-                    scope_candidates=[label_of[k] for k in candidate_keys],
+                    scope_candidates=[label_of[k] for k in candidate_keys], **vocab_kw,
                 )
             else:
-                candidates = extract_atoms(turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key)
+                candidates = extract_atoms(
+                    turns, mem.llm_base_url, mem.llm_model, api_key=mem.llm_api_key, **vocab_kw
+                )
     except Exception as e:  # noqa: BLE001 - fail closed: no promotion, session retried
         report["errors"].append({"session": session_id, "error": str(e)})
+        _note_extraction_failure(mem, session_id, max(t["id"] for t in turns), report)
         return report  # don't mark distilled: a later run retries these same turns
+    _clear_extraction_failures(mem, session_id)
 
     # Deep-review fix: never trust the extractor's own "global" scope
     # label — corroborate it against a user-turns-only extraction pass
@@ -429,6 +485,8 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 else:
                     mem.set_scopes(atom_id, add=target_scopes, resolve_review=False)
                     report["scope_widened"] += 1
+                if cand.get("tags") and not set(cand["tags"]) <= set(existing.tags):
+                    mem.set_tags(atom_id, add=cand["tags"])
                 continue
             similar = [
                 h
@@ -460,6 +518,7 @@ def _distill_one_session(mem: Memory, session_id: str) -> dict:
                 session_id=session_id,
                 scopes=target_scopes,
                 agent=session_agent,
+                tags=cand.get("tags") or None,
             )
             report["atoms"] += 1
             if _queue_review_if_needed(mem, cand, atom, labels):

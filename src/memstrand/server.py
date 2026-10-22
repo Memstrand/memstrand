@@ -415,6 +415,7 @@ async def _remember(request: Request) -> Response:
         data.get("source_ref"),
         data.get("agent"),
         _parse_scopes(data.get("scopes")),
+        _parse_scopes(data.get("tags")),
     )
     return JSONResponse(Memory.atom_to_dict(atom))
 
@@ -438,6 +439,7 @@ async def _recall(request: Request) -> Response:
         limit,
         bool(data.get("include_superseded", False)),
         scopes=_parse_scopes(data.get("scopes")),
+        tags=_parse_scopes(data.get("tags")),
     )
     return JSONResponse({"results": results})
 
@@ -452,6 +454,7 @@ async def _atoms_list(request: Request) -> Response:
     task_id = params.get("task_id")
     host = params.get("host") or None
     agent = params.get("agent") or None
+    tag = params.get("tag") or None
     limit = _parse_bounded_int(params.get("limit"), name="limit", default=100, minimum=0, maximum=1000)
     offset = _parse_bounded_int(params.get("offset"), name="offset", default=0, minimum=0)
     mem: Memory = request.app.state.mem
@@ -464,7 +467,7 @@ async def _atoms_list(request: Request) -> Response:
     # count it.
     atoms, total = await run_in_threadpool(
         mem.list_page, category=category, task_id=task_id, host=host, limit=limit, offset=offset,
-        agent=agent,
+        agent=agent, tag=tag,
     )
     return JSONResponse({"atoms": atoms, "total": total})
 
@@ -613,7 +616,10 @@ async def _session_turns(request: Request) -> Response:
 @_json_errors
 async def _session_mark_distilled(request: Request) -> Response:
     mem: Memory = request.app.state.mem
-    last = await run_in_threadpool(mem.mark_distilled, request.path_params["session_id"])
+    data = await _body(request) if await request.body() else {}
+    last = await run_in_threadpool(
+        mem.mark_distilled, request.path_params["session_id"], bool(data.get("reset", False))
+    )
     return JSONResponse({"last_turn_id": last})
 
 
@@ -646,6 +652,64 @@ async def _reviews(request: Request) -> Response:
     limit = _parse_bounded_int(limit_raw, name="limit", default=3, minimum=1, maximum=100)
     reviews = await run_in_threadpool(mem.pending_scope_reviews, limit, session)
     return JSONResponse({"reviews": reviews})
+
+
+@_json_errors
+async def _atom_tags(request: Request) -> Response:
+    """POST {"set": [...]?, "add": [...]?, "remove": [...]?} -> the atom."""
+    mem: Memory = request.app.state.mem
+    data = await _body(request)
+    atom = await run_in_threadpool(
+        mem.set_tags, request.path_params["atom_id"],
+        _parse_scopes(data.get("set")), _parse_scopes(data.get("add")), _parse_scopes(data.get("remove")),
+    )
+    return JSONResponse(Memory.atom_to_dict(atom))
+
+
+@_json_errors
+async def _atom_related(request: Request) -> Response:
+    params = request.query_params
+    mem: Memory = request.app.state.mem
+    min_shared = _parse_bounded_int(params.get("min_shared"), name="min_shared", default=2, minimum=1, maximum=8)
+    limit = _parse_bounded_int(params.get("limit"), name="limit", default=10, minimum=1, maximum=100)
+    related = await run_in_threadpool(mem.related, request.path_params["atom_id"], min_shared, limit)
+    return JSONResponse({"related": related})
+
+
+@_json_errors
+async def _tags_list(request: Request) -> Response:
+    params = request.query_params
+    mem: Memory = request.app.state.mem
+    limit = _parse_bounded_int(params.get("limit"), name="limit", default=100, minimum=1, maximum=1000)
+    counts = await run_in_threadpool(mem.tag_counts, params.get("scope"), limit)
+    return JSONResponse({"tags": [{"tag": t, "count": n} for t, n in counts]})
+
+
+@_json_errors
+async def _tags_rename(request: Request) -> Response:
+    """POST {"old": "x", "new": "y"} renames/merges; {"old": "x", "new": null} drops."""
+    data = await _body(request)
+    old, new = data.get("old"), data.get("new")
+    if not isinstance(old, str) or (new is not None and not isinstance(new, str)):
+        raise ValueError("old must be a string; new a string or null")
+    mem: Memory = request.app.state.mem
+    return JSONResponse({"changed": await run_in_threadpool(mem.rename_tag, old, new)})
+
+
+@_json_errors
+async def _retag(request: Request) -> Response:
+    data = await _body(request)
+    atom_ids = _parse_scopes(data.get("atom_ids")) or []
+    if not atom_ids:
+        raise ValueError("atom_ids is required")
+    mem: Memory = request.app.state.mem
+    return JSONResponse(await run_in_threadpool(mem.retag, atom_ids, data.get("session_id") or None))
+
+
+@_json_errors
+async def _reindex(request: Request) -> Response:
+    mem: Memory = request.app.state.mem
+    return JSONResponse(await run_in_threadpool(mem.reindex))
 
 
 @_json_errors
@@ -1067,6 +1131,12 @@ def create_app(
         Route("/api/atoms/{atom_id}", _atom_delete, methods=["DELETE"]),
         Route("/api/atoms/{atom_id}/scopes", _atom_scopes, methods=["POST"]),
         Route("/api/scopes", _scopes_list, methods=["GET"]),
+        Route("/api/atoms/{atom_id}/tags", _atom_tags, methods=["POST"]),
+        Route("/api/atoms/{atom_id}/related", _atom_related, methods=["GET"]),
+        Route("/api/tags", _tags_list, methods=["GET"]),
+        Route("/api/tags/rename", _tags_rename, methods=["POST"]),
+        Route("/api/retag", _retag, methods=["POST"]),
+        Route("/api/reindex", _reindex, methods=["POST"]),
         Route("/api/reviews", _reviews, methods=["GET", "POST"]),
         Route("/api/scopes/rename", _scopes_rename, methods=["POST"]),
         Route("/api/turns", _turns, methods=["POST"]),

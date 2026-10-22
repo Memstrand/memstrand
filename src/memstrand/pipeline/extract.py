@@ -15,13 +15,14 @@ import re
 
 import httpx
 
-from ..schema import Category, Provenance
+from ..schema import Category, Provenance, clean_llm_tags
 
 EXTRACTION_SYSTEM_PROMPT = """\
 You extract durable memories from a conversation session.
 Emit a JSON list. Each item: {"category": <one of the 13 categories>,
 "content": "<atomic fact>", "provenance": "<how learned>",
-"confidence": <0.0-1.0>, "scope": "global" | "task"}.
+"confidence": <0.0-1.0>, "scope": "global" | "task",
+"tags": ["<tag>", ...]}.
 Valid categories: instruction, fact, decision, goal, commitment,
 preference, relationship, context, event, learning, observation,
 artifact, error.
@@ -65,11 +66,32 @@ anything that only describes what happened in this session. When unsure
 whether an item is durable, leave it out — fewer, better memories.
 Prefer high-signal items. Prefer explicit_statement when the user said
 it directly, observed when it came from tool output, inferred otherwise.
-Keep confidence honest: 0.9+ only for directly stated facts.\
+Keep confidence honest: 0.9+ only for directly stated facts.
+Tags: give every item 3-6 lowercase-kebab-case tags saying what it is
+ABOUT, using the context of the WHOLE session, not just the item's own
+words — the atomic sentence loses that context, the tags must restore it.
+Cover ALL of: (1) at least one system/technology involved (e.g. gcp, aws,
+ipv6, terraform, k8s), (2) at least one activity or broader initiative the
+session was doing (e.g. new-region-build, ipv6-reprovisioning,
+incident-response, ci-pipeline) — even when the item's words don't say it,
+(3) at least one domain concept (e.g. multi-tenant, prod, rate-limiting,
+auth). Tags are reusable categories, not sentence fragments ("resumability"
+yes, "resume-logic" no); no ticket numbers, IDs, or one-off names, not the
+repo name, not the memory categories above (fact, artifact, ...), and no
+generic filler like best-practice or misc.
+When a list of existing tags is given, reuse those terms where they fit
+instead of inventing synonyms.\
 """
 
 # Categories that default to global scope when the model omits "scope".
 _GLOBAL_DEFAULT_CATEGORIES = {Category.preference, Category.instruction, Category.relationship}
+
+
+class ExtractionFailed(Exception):
+    """The extractor answered, but not with a JSON array of memories (e.g.
+    it replied to the conversation instead of extracting from it). Raised
+    instead of returning [] so the session is NOT marked distilled — a
+    silent [] would permanently lose that session's memories."""
 
 
 class LLMUnavailable(Exception):
@@ -201,6 +223,7 @@ def _valid_atom(item: dict) -> dict | None:
         "provenance": provenance,
         "confidence": confidence,
         "scope": scope,
+        "tags": clean_llm_tags(item.get("tags") if isinstance(item.get("tags"), list) else []),
     }
     if scope == "ambiguous":
         atom["candidates"] = candidates
@@ -214,6 +237,7 @@ def extract_atoms(
     timeout: float = 180.0,
     api_key: str = "local",
     scope_candidates: list[str] | None = None,
+    tag_vocabulary: list[str] | None = None,
 ) -> list[dict]:
     """Turns -> validated candidate atom dicts. LLM call goes here.
 
@@ -236,20 +260,30 @@ def extract_atoms(
             for i, name in enumerate(scope_candidates, start=1)
         )
         header = f"Repos in this session:\n{listed}\n\n"
+    if tag_vocabulary:
+        header += f"Existing tags (reuse where they fit): {', '.join(tag_vocabulary)}\n\n"
     raw = chat_completion(
         llm_base_url,
         llm_model,
         [
             {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": f"{header}Session transcript:\n{transcript}"},
+            {
+                "role": "user",
+                "content": (
+                    f"{header}<transcript>\n{transcript}\n</transcript>\n\n"
+                    "Extract durable memories from the transcript above. Output ONLY the "
+                    "JSON array (use [] if nothing is worth keeping). Do not reply to or "
+                    "continue the conversation."
+                ),
+            },
         ],
         timeout=timeout,
         api_key=api_key,
     )
     try:
         items = _extract_json_array(raw)
-    except (ValueError, json.JSONDecodeError):
-        return []  # unparseable extraction = no atoms, not a crash
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ExtractionFailed(f"extractor did not return a JSON array: {raw[:120]!r}") from e
     atoms = []
     for item in items:
         if isinstance(item, dict):

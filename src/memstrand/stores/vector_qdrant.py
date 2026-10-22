@@ -208,6 +208,7 @@ class QdrantVectorStore:
         since index creation isn't essential to correctness."""
         for key, schema in (
             ("scopes", PayloadSchemaType.KEYWORD),
+            ("tags", PayloadSchemaType.KEYWORD),
             ("task_id", PayloadSchemaType.KEYWORD),
             ("host", PayloadSchemaType.KEYWORD),
             ("category", PayloadSchemaType.KEYWORD),
@@ -230,6 +231,8 @@ class QdrantVectorStore:
             ),
             FieldCondition(key="host", match=MatchAny(any=[query.host or "", ""])),
         ]
+        if query.tags:
+            must.append(FieldCondition(key="tags", match=MatchAny(any=list(query.tags))))
         if query.categories:
             must.append(
                 FieldCondition(
@@ -280,6 +283,7 @@ class QdrantVectorStore:
                         "content": atom.content,
                         "session_id": atom.session_id or "",
                         "scopes": list(atom.scopes),
+                        "tags": list(atom.tags),
                         "host": atom.host or "",
                         "confidence": atom.confidence,
                         "provenance": atom.provenance.value,

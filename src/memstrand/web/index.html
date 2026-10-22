@@ -233,6 +233,19 @@
     .drawer { width: 100%; }
     .bar-label { width: 80px; font-size: 0.75rem; }
   }
+  .count-badge { display: inline-block; min-width: 1.2em; padding: 0 0.35em; margin-left: 0.3em;
+    border-radius: 999px; background: var(--accent); color: var(--accent-fg); font-size: 0.72rem; text-align: center; }
+  .count-badge:empty { display: none; }
+  .tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.35rem; }
+  .tag-chip { border: 1px solid var(--border); border-radius: 999px; padding: 0.05rem 0.5rem;
+    font-size: 0.75rem; background: var(--surface-2); cursor: pointer; }
+  .tag-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .tag-chip.selected { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .tag-chip .count { opacity: 0.65; margin-left: 0.25em; }
+  .tag-filter { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .review-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.7rem 0.8rem; }
+  .review-row .actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; align-items: center; }
+  .review-row select { min-width: 16rem; }
 </style>
 </head>
 <body>
@@ -243,9 +256,11 @@
     <span class="sub" id="atom-count"></span>
     <button id="settings-btn" type="button" title="Set daemon token" aria-label="Settings" style="margin-left:auto;">⚙</button>
   </header>
+  <datalist id="tag-options"></datalist>
   <nav class="tabs">
     <button class="tab-btn active" data-tab="search">Search</button>
     <button class="tab-btn" data-tab="browse">Browse</button>
+    <button class="tab-btn" data-tab="review">Review<span id="review-count" class="count-badge"></span></button>
     <button class="tab-btn" data-tab="maint">Maintenance</button>
   </nav>
   <main>
@@ -262,6 +277,12 @@
           <label class="checkbox">
             <input id="search-superseded" type="checkbox"> include superseded
           </label>
+        </div>
+        <div class="row filters">
+          <label>Tags (any of)
+            <input id="search-tag-input" type="text" list="tag-options" placeholder="type a tag, Enter to add" autocomplete="off">
+          </label>
+          <div id="search-tags" class="tag-filter"></div>
         </div>
         <div id="search-categories" class="chips"></div>
       </form>
@@ -328,14 +349,26 @@
         <label>Host
           <input id="browse-host" type="text" placeholder="(optional)">
         </label>
+        <label>Tag
+          <input id="browse-tag" type="text" list="tag-options" placeholder="(optional)" autocomplete="off">
+        </label>
         <div><button id="browse-apply">Apply</button></div>
       </div>
+      <div id="top-tags" class="tags" style="margin-bottom:0.6rem"></div>
       <div id="browse-list" class="results"></div>
       <div class="pager">
         <button id="browse-prev">◀ Prev</button>
         <span id="browse-pageinfo" class="muted"></span>
         <button id="browse-next">Next ▶</button>
       </div>
+    </section>
+
+    <section id="tab-review" class="tab" hidden>
+      <div class="panel">
+        <p class="muted" style="margin:0">memstrand wasn't sure where these memories apply. Answer here any time —
+          Claude also asks about them in sessions; whichever you answer first resolves it.</p>
+      </div>
+      <div id="review-list" class="results"></div>
     </section>
 
     <section id="tab-maint" class="tab" hidden>
@@ -489,7 +522,11 @@
   // ---------- formatting ----------
   function fmtDate(iso) {
     if (!iso) return "—";
-    const d = new Date(iso);
+    // ISO strings parse as-is; numbers are epoch SECONDS (the provenance
+    // ledger's `ts`) — Date() wants milliseconds, or it shows 1970.
+    const d = (typeof iso === "number" || /^\d+(\.\d+)?$/.test(String(iso)))
+      ? new Date(Number(iso) * 1000)
+      : new Date(iso);
     return isNaN(d.getTime()) ? String(iso) : d.toLocaleString();
   }
   function fmtNum(n, digits) {
@@ -519,6 +556,21 @@
   }
 
   // ---------- memory card (shared by search results + browse list) ----------
+  function tagChips(tags) {
+    const box = el("div", { class: "tags" });
+    for (const t of tags) {
+      box.appendChild(el("span", { class: "tag-chip", text: "#" + t, title: "Browse memories tagged " + t,
+        onclick: (e) => { e.stopPropagation(); browseByTag(t); } }));
+    }
+    return box;
+  }
+  function browseByTag(tag) {
+    closeDrawer();
+    $("#browse-tag").value = tag;
+    state.browse.tag = tag;
+    state.browse.offset = 0;
+    showTab("browse");
+  }
   function memoryCard(item, isHit) {
     const card = el("div", {
       class: "card" + (item.superseded ? " superseded" : ""),
@@ -543,6 +595,7 @@
     if (item.source) meta.appendChild(metaItem("source", item.source + (item.source_ref ? (" (" + item.source_ref + ")") : "")));
     if (item.superseded) meta.appendChild(el("span", { class: "meta-item", text: "superseded" }));
     card.appendChild(meta);
+    if (Array.isArray(item.tags) && item.tags.length) card.appendChild(tagChips(item.tags));
     if (isHit && Array.isArray(item.contradictions) && item.contradictions.length) {
       const warn = el("div", { class: "contradiction" }, "⚠ contradicts:");
       for (const c of item.contradictions) {
@@ -566,23 +619,87 @@
       $("#app-version").textContent = "v" + h.version;
       $("#atom-count").textContent = h.atoms + " atoms";
     } catch (e) { /* banner already shown by api() */ }
+    refreshReviewCount();
+    loadTagCounts();
+  }
+  async function refreshReviewCount() {
+    try {
+      const data = await api("/api/reviews?limit=100");
+      const n = (data.reviews || []).length;
+      $("#review-count").textContent = n ? (n >= 100 ? "99+" : String(n)) : "";
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---------- review ----------
+  async function loadReviews() {
+    const container = $("#review-list");
+    clear(container);
+    container.appendChild(el("p", { class: "muted", text: "Loading…" }));
+    try {
+      const [data, scopes] = await Promise.all([api("/api/reviews?limit=100"), api("/api/scopes")]);
+      const reviews = data.reviews || [];
+      const known = Object.keys(scopes.scopes || {}).filter((k) => k);
+      clear(container);
+      if (!reviews.length) container.appendChild(el("p", { class: "empty", text: "Nothing to review." }));
+      for (const r of reviews) container.appendChild(reviewRow(r, known));
+      $("#review-count").textContent = reviews.length ? String(reviews.length) : "";
+    } catch (err) { renderError(container, err); }
+  }
+  function reviewRow(r, known) {
+    const row = el("div", { class: "review-row" });
+    row.appendChild(el("div", { class: "card-top" }, categoryBadge(r.category),
+      el("span", { class: "score", text: "now: " + scopeLabel(r) })));
+    row.appendChild(el("p", { class: "content", text: r.content, title: "Open details",
+      style: "cursor:pointer", onclick: () => openDrawer(r.id) }));
+    if (Array.isArray(r.tags) && r.tags.length) row.appendChild(tagChips(r.tags));
+    row.appendChild(el("div", { class: "muted", text: r.reason }));
+    const picker = el("select", { multiple: "multiple", size: "4", hidden: "hidden" });
+    for (const k of known) {
+      const opt = el("option", { value: k, text: k });
+      if ((r.scopes || []).includes(k) || (r.candidates || []).includes(k)) opt.selected = true;
+      picker.appendChild(opt);
+    }
+    const save = el("button", { type: "button", hidden: "hidden", text: "Save repos" });
+    const status = el("span", { class: "muted" });
+    async function answer(payload, label) {
+      try {
+        await api("/api/atoms/" + encodeURIComponent(r.id) + "/scopes", { method: "POST", body: JSON.stringify(payload) });
+        row.remove();
+        refreshReviewCount();
+        if (!$("#review-list").children.length) loadReviews();
+      } catch (err) { status.textContent = label + " failed: " + err.message; }
+    }
+    const actions = el("div", { class: "actions" },
+      el("button", { type: "button", text: "Everywhere", onclick: () => answer({ set: [""] }, "Everywhere") }),
+      el("button", { type: "button", text: "Keep as is", onclick: () => answer({ keep: true }, "Keep") }),
+      el("button", { type: "button", text: "Only these repos…", onclick: () => { picker.hidden = false; save.hidden = false; } }),
+      el("button", { type: "button", text: "Details / tags", onclick: () => openDrawer(r.id) }),
+      picker, save, status);
+    save.addEventListener("click", () => {
+      const chosen = Array.from(picker.selectedOptions).map((o) => o.value);
+      if (!chosen.length) { status.textContent = "pick at least one repo"; return; }
+      answer({ set: chosen }, "Save");
+    });
+    row.appendChild(actions);
+    return row;
   }
 
   // ---------- tabs ----------
-  const TABS = ["search", "browse", "maint"];
+  const TABS = ["search", "browse", "review", "maint"];
   function showTab(name) {
     for (const t of TABS) $("#tab-" + t).hidden = (t !== name);
     for (const btn of document.querySelectorAll(".tab-btn")) btn.classList.toggle("active", btn.dataset.tab === name);
     if (name === "maint") loadStats();
     if (name === "browse") loadBrowse();
+    if (name === "review") loadReviews();
   }
   for (const btn of document.querySelectorAll(".tab-btn")) {
     btn.addEventListener("click", () => showTab(btn.dataset.tab));
   }
 
   // ---------- search ----------
-  const state = { searchCategories: new Set(), lastSearchPayload: null,
-    browse: { offset: 0, limit: 20, category: "", taskMode: "all", taskId: "", host: "", total: 0 } };
+  const state = { searchCategories: new Set(), searchTags: new Set(), tagCounts: [], lastSearchPayload: null,
+    browse: { offset: 0, limit: 20, category: "", taskMode: "all", taskId: "", host: "", tag: "", total: 0 } };
 
   function buildCategoryChips() {
     const wrap = $("#search-categories");
@@ -605,6 +722,7 @@
     const task = $("#search-task").value.trim();
     if (task) payload.task_id = task;
     if (state.searchCategories.size) payload.categories = Array.from(state.searchCategories);
+    if (state.searchTags.size) payload.tags = Array.from(state.searchTags);
     state.lastSearchPayload = payload;
     const container = $("#search-results");
     try {
@@ -675,6 +793,7 @@
     state.browse.taskMode = $("#browse-task-mode").value;
     state.browse.taskId = $("#browse-task-id").value.trim();
     state.browse.host = $("#browse-host").value.trim();
+    state.browse.tag = $("#browse-tag").value.trim();
     state.browse.offset = 0;
     loadBrowse();
   });
@@ -687,13 +806,76 @@
     loadBrowse();
   });
 
+  // ---------- tags: autocomplete, search filter, top-tags strip ----------
+  async function loadTagCounts() {
+    try {
+      const data = await api("/api/tags?limit=500");
+      state.tagCounts = (data.tags || []).map((t) => [t.tag, t.count]);
+    } catch (e) { state.tagCounts = []; }
+    const dl = $("#tag-options");
+    clear(dl);
+    for (const [tag, count] of state.tagCounts) dl.appendChild(el("option", { value: tag, label: tag + " (" + count + ")" }));
+    renderTopTags();
+  }
+  function renderTopTags() {
+    const box = $("#top-tags");
+    clear(box);
+    const current = state.browse.tag;
+    for (const [tag, count] of state.tagCounts.slice(0, 30)) {
+      box.appendChild(el("span", {
+        class: "tag-chip" + (tag === current ? " selected" : ""),
+        title: tag === current ? "Clear tag filter" : "Browse memories tagged " + tag,
+        onclick: () => {
+          const next = tag === current ? "" : tag;
+          $("#browse-tag").value = next;
+          state.browse.tag = next;
+          state.browse.offset = 0;
+          loadBrowse();
+        },
+      }, "#" + tag, el("span", { class: "count", text: String(count) })));
+    }
+  }
+  function renderSearchTags() {
+    const box = $("#search-tags");
+    clear(box);
+    for (const tag of state.searchTags) {
+      box.appendChild(el("span", { class: "tag-chip selected", title: "Remove", onclick: () => {
+        state.searchTags.delete(tag);
+        renderSearchTags();
+        if ($("#search-query").value.trim()) runSearch();
+      } }, "#" + tag + " ✕"));
+    }
+  }
+  $("#search-tag-input").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();  // don't submit the search form
+    const raw = e.target.value.trim().toLowerCase().replace(/[\s_]+/g, "-");
+    if (!raw) return;
+    state.searchTags.add(raw);
+    e.target.value = "";
+    renderSearchTags();
+    if ($("#search-query").value.trim()) runSearch();
+  });
+  $("#search-tag-input").addEventListener("change", (e) => {
+    // picking a datalist suggestion fires `change` — add it right away
+    const raw = e.target.value.trim();
+    if (raw && state.tagCounts.some(([t]) => t === raw)) {
+      state.searchTags.add(raw);
+      e.target.value = "";
+      renderSearchTags();
+      if ($("#search-query").value.trim()) runSearch();
+    }
+  });
+
   async function loadBrowse() {
+    renderTopTags();
     const b = state.browse;
     const params = new URLSearchParams();
     if (b.category) params.set("category", b.category);
     if (b.taskMode === "global") params.set("task_id", "");
     else if (b.taskMode === "specific" && b.taskId) params.set("task_id", b.taskId);
     if (b.host) params.set("host", b.host);
+    if (b.tag) params.set("tag", b.tag);
     params.set("limit", String(b.limit));
     params.set("offset", String(b.offset));
     const container = $("#browse-list");
@@ -723,6 +905,7 @@
     const activeBtn = document.querySelector(".tab-btn.active");
     const name = activeBtn ? activeBtn.dataset.tab : "search";
     if (name === "browse") loadBrowse();
+    else if (name === "review") loadReviews();
     else if (name === "search" && state.lastSearchPayload) runSearch();
   }
 
@@ -779,6 +962,24 @@
     fields.appendChild(metaItem("last_accessed_at", atom.last_accessed_at ? fmtDate(atom.last_accessed_at) : "—"));
     content.appendChild(fields);
 
+    const tagSection = el("div", { class: "drawer-section" });
+    tagSection.appendChild(el("h3", { text: "Tags" }));
+    if (Array.isArray(atom.tags) && atom.tags.length) tagSection.appendChild(tagChips(atom.tags));
+    else tagSection.appendChild(el("p", { class: "muted", text: "No tags yet." }));
+    const tagInput = el("input", { type: "text", value: (atom.tags || []).join(", "), placeholder: "comma-separated tags" });
+    const tagStatus = el("span", { class: "muted" });
+    tagSection.appendChild(el("div", { class: "row" }, tagInput,
+      el("button", { type: "button", text: "Save tags", onclick: async () => {
+        const tags = tagInput.value.split(",").map((t) => t.trim()).filter(Boolean);
+        try {
+          const updated = await api("/api/atoms/" + encodeURIComponent(atom.id) + "/tags",
+            { method: "POST", body: JSON.stringify({ set: tags }) });
+          openDrawer(updated.id);
+          refreshCurrentView();
+        } catch (err) { tagStatus.textContent = "Save failed: " + err.message; }
+      } }), tagStatus));
+    content.appendChild(tagSection);
+
     const viewSection = el("div", { class: "drawer-section" });
     viewSection.appendChild(el("h3", { text: "Content" }));
     const contentView = el("p", { class: "content", text: atom.content });
@@ -802,6 +1003,23 @@
         ));
       }
       content.appendChild(sec);
+    }
+
+    if (Array.isArray(atom.tags) && atom.tags.length) {
+      const sec = el("div", { class: "drawer-section" });
+      sec.appendChild(el("h3", { text: "Related (shared tags)" }));
+      const list = el("div", {});
+      sec.appendChild(list);
+      content.appendChild(sec);
+      api("/api/atoms/" + encodeURIComponent(atom.id) + "/related?limit=10").then((data) => {
+        const related = data.related || [];
+        if (!related.length) list.appendChild(el("p", { class: "muted", text: "No memories share 2+ tags yet." }));
+        for (const r of related) {
+          list.appendChild(el("button", { type: "button", class: "neighbor-row", onclick: () => openDrawer(r.id) },
+            el("span", { class: "rel-type", text: (r.shared_tags || []).join(", ") }),
+            el("span", { class: "rel-content", text: r.content })));
+        }
+      }).catch(() => list.appendChild(el("p", { class: "muted", text: "Could not load related memories." })));
     }
 
     if (Array.isArray(atom.history) && atom.history.length) {
@@ -844,7 +1062,14 @@
       try {
         const updated = await api("/api/atoms/" + encodeURIComponent(atom.id), { method: "PATCH", body: JSON.stringify(payload) });
         await openDrawer(updated.id);
+        if (updated.id !== atom.id) {
+          // a content edit is a correction: a new memory supersedes the original
+          $("#drawer-content").prepend(el("div", { class: "panel", style: "margin-bottom:0.6rem",
+            text: "Saved as a corrected version (" + updated.id + "). The original " + atom.id +
+              " stays in history as superseded." }));
+        }
         refreshCurrentView();
+        refreshReviewCount();
       } catch (err) {
         errBox.textContent = "Save failed: " + err.message;
         errBox.style.display = "";

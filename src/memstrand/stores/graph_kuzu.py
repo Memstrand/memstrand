@@ -29,7 +29,7 @@ from .base import sort_hop_results
 
 def _atom_filter_clause(
     category: str | None, task_id: str | None, host: str | None, alias: str = "a",
-    agent: str | None = None,
+    agent: str | None = None, tag: str | None = None,
 ) -> tuple[str, dict]:
     """Shared WHERE-clause builder for list_atoms/count_atoms so the two
     can never drift out of sync on filter semantics (fix #10).
@@ -46,6 +46,9 @@ def _atom_filter_clause(
         else:
             clauses.append(f"{alias}.{col} = ${col}")
             params[col] = value
+    if tag is not None:
+        clauses.append(f"contains({alias}.tags, $tag_member)")
+        params["tag_member"] = f"|{tag}|"
     if task_id is not None:
         col = f"{alias}.task_id"
         if task_id == "":
@@ -71,6 +74,7 @@ _ATOM_MIGRATIONS = (
     ("source", "STRING", "''"),
     ("source_ref", "STRING", "''"),
     ("last_accessed_at", "STRING", "''"),
+    ("tags", "STRING", "''"),  # encoded like scopes: "|a|b|"
 )
 _LINK_MIGRATIONS = (("created_at", "STRING", "''"),)
 
@@ -79,7 +83,7 @@ def _row_to_atom(row: tuple) -> MemoryAtom:
     (
         aid, cat, content, prov, conf, sess, task, host, agent,
         created, expires, updated, access_count,
-        fsrs_diff, fsrs_stab, fsrs_next, source, source_ref, last_accessed,
+        fsrs_diff, fsrs_stab, fsrs_next, source, source_ref, last_accessed, tags,
     ) = row
     created_at = datetime.fromisoformat(created) if created else datetime.now(UTC)
     return MemoryAtom(
@@ -103,6 +107,7 @@ def _row_to_atom(row: tuple) -> MemoryAtom:
         source=source or None,
         source_ref=source_ref or None,
         last_accessed_at=datetime.fromisoformat(last_accessed) if last_accessed else None,
+        tags=[t for t in (tags or "").split("|") if t],
     )
 
 
@@ -150,7 +155,7 @@ class KuzuGraphStore:
                     created_at STRING, expires_at STRING, updated_at STRING,
                     access_count INT64,
                     fsrs_difficulty DOUBLE, fsrs_stability_days DOUBLE, fsrs_next_review STRING,
-                    source STRING, source_ref STRING, last_accessed_at STRING,
+                    source STRING, source_ref STRING, last_accessed_at STRING, tags STRING,
                     PRIMARY KEY (id))"""
             )
             self.conn.execute(
@@ -177,7 +182,7 @@ class KuzuGraphStore:
                        a.fsrs_difficulty=$fsrs_diff, a.fsrs_stability_days=$fsrs_stab,
                        a.fsrs_next_review=$fsrs_next,
                        a.source=$source, a.source_ref=$source_ref,
-                       a.last_accessed_at=$last_accessed""",
+                       a.last_accessed_at=$last_accessed, a.tags=$tags""",
                 {
                     "id": atom.id, "cat": atom.category.value,
                     "content": atom.content, "prov": atom.provenance.value,
@@ -193,6 +198,7 @@ class KuzuGraphStore:
                     "fsrs_next": atom.fsrs_next_review.isoformat() if atom.fsrs_next_review else "",
                     "source": atom.source or "", "source_ref": atom.source_ref or "",
                     "last_accessed": atom.last_accessed_at.isoformat() if atom.last_accessed_at else "",
+                    "tags": f"|{'|'.join(atom.tags)}|" if atom.tags else "",
                 },
             )
 
@@ -240,7 +246,7 @@ class KuzuGraphStore:
                           a.confidence, a.session_id, a.task_id, a.host, a.agent,
                           a.created_at, a.expires_at, a.updated_at, a.access_count,
                           a.fsrs_difficulty, a.fsrs_stability_days, a.fsrs_next_review,
-                          a.source, a.source_ref, a.last_accessed_at""",
+                          a.source, a.source_ref, a.last_accessed_at, a.tags""",
                 {"id": atom_id},
             ).get_all()
         return _row_to_atom(rows[0]) if rows else None
@@ -256,7 +262,7 @@ class KuzuGraphStore:
                           a.confidence, a.session_id, a.task_id, a.host, a.agent,
                           a.created_at, a.expires_at, a.updated_at, a.access_count,
                           a.fsrs_difficulty, a.fsrs_stability_days, a.fsrs_next_review,
-                          a.source, a.source_ref, a.last_accessed_at""",
+                          a.source, a.source_ref, a.last_accessed_at, a.tags""",
                 {"ids": atom_ids},
             ).get_all()
         return {row[0]: _row_to_atom(row) for row in rows}
@@ -269,8 +275,9 @@ class KuzuGraphStore:
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> list[MemoryAtom]:
-        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent, tag=tag)
         with self._lock:
             rows = self.conn.execute(
                 f"""MATCH (a:Atom) {where}
@@ -278,7 +285,7 @@ class KuzuGraphStore:
                            a.confidence, a.session_id, a.task_id, a.host, a.agent,
                            a.created_at, a.expires_at, a.updated_at, a.access_count,
                            a.fsrs_difficulty, a.fsrs_stability_days, a.fsrs_next_review,
-                           a.source, a.source_ref, a.last_accessed_at
+                           a.source, a.source_ref, a.last_accessed_at, a.tags
                     ORDER BY a.created_at DESC
                     SKIP {int(offset)} LIMIT {int(limit)}""",
                 params,
@@ -291,8 +298,9 @@ class KuzuGraphStore:
         task_id: str | None = None,
         host: str | None = None,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> int:
-        where, params = _atom_filter_clause(category, task_id, host, agent=agent)
+        where, params = _atom_filter_clause(category, task_id, host, agent=agent, tag=tag)
         with self._lock:
             row = self.conn.execute(f"MATCH (a:Atom) {where} RETURN count(*)", params).get_next()
         return int(row[0]) if row else 0
@@ -353,7 +361,7 @@ class KuzuGraphStore:
         "b.id, b.category, b.content, b.provenance, b.confidence, b.session_id, "
         "b.task_id, b.host, b.agent, b.created_at, b.expires_at, b.updated_at, "
         "b.access_count, b.fsrs_difficulty, b.fsrs_stability_days, b.fsrs_next_review, "
-        "b.source, b.source_ref, b.last_accessed_at"
+        "b.source, b.source_ref, b.last_accessed_at, b.tags"
     )
 
     def _one_hop(
@@ -388,7 +396,7 @@ class KuzuGraphStore:
                 params,
             ).get_all()
         for r in outgoing + incoming:
-            out.append((_row_to_atom(r[:19]), _row_to_edge(r[19:])))
+            out.append((_row_to_atom(r[:20]), _row_to_edge(r[20:])))
         # Deterministic order (fix: cross-backend neighbors(depth>1) parity)
         # -- Cypher gives no ordering guarantee either, and the outgoing/
         # incoming results are two separately-ordered result sets
@@ -442,6 +450,26 @@ class KuzuGraphStore:
                 {"rel": RelationType.supersedes.value, "ids": atom_ids},
             ).get_all()
         return {r[0] for r in rows}
+
+    def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]:
+        counts: dict[str, int] = {}
+        for atom in self.list_atoms(task_id=task_id, limit=1_000_000):
+            for tag in atom.tags:
+                counts[tag] = counts.get(tag, 0) + 1
+        return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+    def related_by_tags(self, atom_id: str, min_shared: int = 2, limit: int = 20) -> list[tuple[str, int]]:
+        me = self.get_atom(atom_id)
+        if me is None or not me.tags:
+            return []
+        mine = set(me.tags)
+        scored = [
+            (a.id, len(mine & set(a.tags)))
+            for a in self.list_atoms(limit=1_000_000)
+            if a.id != atom_id
+        ]
+        scored = [(aid, n) for aid, n in scored if n >= min_shared]
+        return sorted(scored, key=lambda t: (-t[1], t[0]))[:limit]
 
     def delete_atom(self, atom_id: str) -> None:
         """DETACH DELETE: removes the node and all its edges. Facts are

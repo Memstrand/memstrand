@@ -278,3 +278,43 @@ def test_non_utf8_transcript_still_logs(tmp_path, monkeypatch):
     )
     assert result["logged"] == 1
     assert mem.sessions.get_session("claude-code:u")[0]["content"] == "hello there"
+
+
+# -- editing a memory under review ---------------------------------------------------------
+
+
+def test_content_edit_carries_review_and_tags(mem):
+    old = mem.remember("trigger china ci with DEPLOY_CI", scopes=["r"], tags=["gitlab", "ci-pipeline"])
+    mem.queue_scope_review(old.id, "unverified_global", "couldn't confirm")
+    new = mem.update(old.id, content="trigger china ci with DEPLOY_CI=china on the release branch")
+    assert new.id != old.id and new.tags == ["gitlab", "ci-pipeline"]
+    assert mem.sessions.scope_review_status(old.id) == "superseded"
+    (review,) = mem.pending_scope_reviews()
+    assert review["id"] == new.id and review["content"].endswith("release branch")
+    assert review["kind"] == "unverified_global"
+
+
+def test_review_stuck_on_superseded_memory_moves_to_current_version(mem):
+    """Reviews queued before the fix stay on the superseded original."""
+    old = mem.remember("users want cross-project memory", scopes=["r"])
+    new = mem.update(old.id, content="users want memory across all past conversations")
+    mem.sessions.resolve_scope_review(new.id, "expired")  # simulate pre-fix state:
+    mem.sessions.conn.execute("DELETE FROM scope_review")  # ...a pending row on the OLD id only
+    mem.sessions.conn.commit()
+    mem.queue_scope_review(old.id, "ambiguous", "unsure")
+    (review,) = mem.pending_scope_reviews()
+    assert review["id"] == new.id
+    assert mem.sessions.scope_review_status(old.id) == "superseded"
+
+
+def test_superseded_review_with_decided_head_is_dropped(mem):
+    old = mem.remember("a fact", scopes=["r"])
+    new = mem.update(old.id, content="a corrected fact")
+    mem.queue_scope_review(new.id, "ambiguous", "unsure")
+    mem.confirm_scopes(new.id)  # user already decided the current version
+    mem.sessions.conn.execute(
+        "INSERT INTO scope_review(atom_id, kind, reason, candidates, status, shown_sessions, created_ts) "
+        "VALUES (?, 'ambiguous', 'unsure', '[]', 'pending', '[]', 0)", (old.id,))
+    mem.sessions.conn.commit()
+    assert mem.pending_scope_reviews() == []
+    assert mem.sessions.scope_review_status(new.id) == "confirmed"

@@ -36,6 +36,7 @@ from .schema import (
     RelationType,
     ScopedQuery,
     normalize_scopes,
+    normalize_tags,
     scopes_visible,
 )
 from .stores.base import GraphStore, KeywordIndex, SessionStore, VectorStore
@@ -211,6 +212,12 @@ class Memory:
             self.reranker = Reranker(self.settings.rerank_model)
 
         self._migrate_scoping_v2()
+        if getattr(self.keyword, "needs_rebuild", False):
+            # the keyword index was recreated over an older schema: it's derived
+            # data, so repopulate it from the graph (no embedding, no LLM)
+            for atom in self._iter_all_atoms():
+                self.keyword.add(atom)
+            self.keyword.needs_rebuild = False
 
     # -- one-time migrations ------------------------------------------------------
 
@@ -288,14 +295,15 @@ class Memory:
             update={
                 "id": new_id,
                 "scopes": normalize_scopes([s for a in atoms for s in a.scopes]),
+                "tags": normalize_tags([t for a in atoms for t in a.tags]),
                 "confidence": max(a.confidence for a in atoms),
                 "created_at": min(a.created_at for a in atoms),
             }
         )
         vector = next(
-            (v for v in (self.vectors.get_vector(a.id) for a in atoms) if v is not None), None
+            (self.vectors.get_vector(a.id) for a in atoms if a.embed_text == merged.embed_text), None
         )
-        self.vectors.upsert(merged, vector if vector is not None else self._embed(merged.content))
+        self.vectors.upsert(merged, vector if vector is not None else self._embed_atom(merged))
         self.graph.add_atom(merged)
         self.keyword.add(merged)
         return merged
@@ -338,6 +346,19 @@ class Memory:
         return cls(**kwargs)
 
     # -- internal helpers ---------------------------------------------------
+
+    def _embed_atom(self, atom: MemoryAtom) -> list[float]:
+        """An atom's embedding: content plus its tags (`MemoryAtom.embed_text`)."""
+        return self._embed(atom.embed_text)
+
+    def _vector_for(self, atom: MemoryAtom, previous: MemoryAtom | None = None) -> list[float]:
+        """Reuse the stored embedding when the embedded text is unchanged
+        (re-scoping, metadata edits); re-embed (locally) when it changed."""
+        if previous is not None and previous.embed_text == atom.embed_text:
+            vector = self.vectors.get_vector(atom.id)
+            if vector is not None:
+                return vector
+        return self._embed_atom(atom)
 
     def _embed(self, text: str) -> list[float]:
         vec = self.embedder.embed([text])
@@ -415,6 +436,7 @@ class Memory:
         source_ref: str | None = None,
         agent: str | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> MemoryAtom:
         """Store one memory. Scope is `scopes` (a list of scope keys;
         `[""]`/`None` entries mean global) or the legacy single `task_id`.
@@ -434,18 +456,20 @@ class Memory:
             now = datetime.now(UTC)
             requested = _atom_scopes(task_id, scopes)
             new_scopes = requested
+            new_tags = normalize_tags(tags or [])
             if existing is not None:
                 new_scopes = normalize_scopes([*existing.scopes, *requested])
+                new_tags = normalize_tags([*existing.tags, *new_tags])
                 if not set(requested) <= set(existing.scopes):
                     widened = existing.model_copy(
                         update={
                             "scopes": new_scopes,
+                            "tags": new_tags,
                             "confidence": max(existing.confidence, confidence),
                             "updated_at": now,
                         }
                     )
-                    vector = self.vectors.get_vector(atom_id)
-                    self.vectors.upsert(widened, vector if vector is not None else self._embed(content))
+                    self.vectors.upsert(widened, self._vector_for(widened, existing))
                     self.graph.add_atom(widened)
                     self.keyword.add(widened)
                     self.sessions.log_provenance(
@@ -460,6 +484,7 @@ class Memory:
                 confidence=confidence,
                 session_id=session_id,
                 scopes=new_scopes,
+                tags=new_tags,
                 host=host,
                 agent=agent,
                 source=source,
@@ -476,8 +501,7 @@ class Memory:
                 fsrs_stability_days=existing.fsrs_stability_days if existing else 30.0,
                 fsrs_next_review=existing.fsrs_next_review if existing else None,
             )
-            embedding = self._embed(content)
-            self.vectors.upsert(atom, embedding)
+            self.vectors.upsert(atom, self._vector_for(atom, existing))
             self.graph.add_atom(atom)
             self.keyword.add(atom)
             self.sessions.log_provenance(atom.id, "remember", provenance.value)
@@ -524,11 +548,17 @@ class Memory:
                 turns = turns[:limit]
             return {"session_id": matches[0], "turns": turns}
 
-    def mark_distilled(self, session_id: str) -> int:
+    def mark_distilled(self, session_id: str, reset: bool = False) -> int:
         """Mark every turn logged so far in `session_id` as distilled without
         running the LLM (e.g. a backfilled session too small to be worth
-        it), so consolidation won't distill it later. Returns the watermark."""
+        it), so consolidation won't distill it later. `reset=True` does the
+        opposite: rewinds the watermark to 0 so the whole session is
+        distilled again (re-learning identical content is a no-op merge).
+        Returns the new watermark."""
         with self._lock:
+            if reset:
+                self.sessions.mark_distilled(session_id, 0)
+                return 0
             turns = self.sessions.get_session(session_id)
             last = max((t["id"] for t in turns), default=0)
             if last:
@@ -612,11 +642,116 @@ class Memory:
         updated = atom.model_copy(
             update={"scopes": normalize_scopes(scopes), "updated_at": datetime.now(UTC)}
         )
-        vector = self.vectors.get_vector(atom.id)
-        self.vectors.upsert(updated, vector if vector is not None else self._embed(atom.content))
+        self.vectors.upsert(updated, self._vector_for(updated, atom))
         self.graph.add_atom(updated)
         self.keyword.add(updated)
         return updated
+
+    # -- tags ---------------------------------------------------------------------
+
+    def set_tags(
+        self,
+        atom_id: str,
+        tags: list[str] | None = None,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> MemoryAtom:
+        """Replace an atom's tags with `tags`, and/or `add`/`remove` some.
+        Re-embeds (locally) since tags are part of the embedded text."""
+        with self._lock:
+            atom = self.graph.get_atom(atom_id)
+            if atom is None:
+                raise KeyError(f"no such atom: {atom_id}")
+            current = normalize_tags(tags) if tags is not None else list(atom.tags)
+            drop = set(normalize_tags(remove or []))
+            new_tags = [t for t in normalize_tags([*current, *(add or [])]) if t not in drop]
+            if new_tags == atom.tags:
+                return atom
+            updated = atom.model_copy(update={"tags": new_tags, "updated_at": datetime.now(UTC)})
+            self.vectors.upsert(updated, self._vector_for(updated, atom))
+            self.graph.add_atom(updated)
+            self.keyword.add(updated)
+            self.sessions.log_provenance(atom_id, "tags", ", ".join(new_tags) or "(none)")
+            return updated
+
+    def rename_tag(self, old: str, new: str | None) -> int:
+        """Rename tag `old` to `new` on every atom (merging into `new` where
+        it already exists), or drop it everywhere when `new` is None.
+        Re-embeds the affected atoms locally. Returns how many changed."""
+        old_key = (normalize_tags([old]) or [None])[0]
+        new_key = (normalize_tags([new]) or [None])[0] if new is not None else None
+        if old_key is None or (new is not None and new_key is None):
+            raise ValueError(f"invalid tag: {old if old_key is None else new!r}")
+        if old_key == new_key:
+            return 0
+        changed = 0
+        for atom in list(self._iter_all_atoms()):
+            if old_key not in atom.tags:
+                continue
+            tags = [new_key if t == old_key else t for t in atom.tags if new_key is not None or t != old_key]
+            self.set_tags(atom.id, tags=tags)
+            changed += 1
+        return changed
+
+    def tag_counts(self, task_id: str | None = None, limit: int = 100) -> list[tuple[str, int]]:
+        """Most-used tags (optionally among atoms in scope `task_id`)."""
+        with self._lock:
+            return self.graph.tag_counts(task_id=task_id, limit=limit)
+
+    def related(
+        self,
+        atom_id: str,
+        min_shared: int = 2,
+        limit: int = 10,
+        scopes: list[str] | None = None,
+        scoped: bool = False,
+    ) -> list[dict]:
+        """Memories sharing at least `min_shared` tags with `atom_id`, most
+        shared first, each with `shared_tags`. Owner-facing by default (all
+        scopes, like `get()`); `scoped=True` applies the recall visibility
+        rule for `scopes`."""
+        with self._lock:
+            me = self.graph.get_atom(atom_id)
+            if me is None:
+                raise KeyError(f"no such atom: {atom_id}")
+            now = datetime.now(UTC)
+            pairs = self.graph.related_by_tags(atom_id, min_shared=min_shared, limit=limit * 3)
+            atoms = self.graph.get_atoms([aid for aid, _ in pairs])
+            superseded = self.graph.superseded_ids(list(atoms))
+            out = []
+            for aid, _ in pairs:
+                atom = atoms.get(aid)
+                if atom is None or aid in superseded:
+                    continue
+                if scoped and not self._visible(atom, _query_scopes(None, scopes), None, now):
+                    continue
+                d = self.atom_to_dict(atom)
+                d["shared_tags"] = [t for t in atom.tags if t in me.tags]
+                out.append(d)
+                if len(out) >= limit:
+                    break
+            return out
+
+    def retag(self, atom_ids: list[str], session_id: str | None = None) -> dict:
+        """LLM re-tagging of existing memories, using `session_id`'s logged
+        conversation as context (see `pipeline.tagging`). Spends LLM tokens."""
+        from .pipeline import tagging
+
+        return tagging.retag(self, atom_ids, session_id=session_id)
+
+    def reindex(self, vectors: bool = True, keyword: bool = True) -> dict:
+        """Rebuild the derived indexes from the graph store (the source of
+        truth): re-embed every atom's content+tags (local embedder, no LLM)
+        and rewrite its keyword-index row. Fixes drift between stores."""
+        done = 0
+        for atom in list(self._iter_all_atoms()):
+            with self._lock:
+                if vectors:
+                    self.vectors.upsert(atom, self._embed_atom(atom))
+                if keyword:
+                    self.keyword.add(atom)
+            done += 1
+        return {"atoms": done, "vectors": vectors, "keyword": keyword}
 
     # -- scope management ---------------------------------------------------------
 
@@ -694,6 +829,16 @@ class Memory:
                 if atom is None:
                     self.sessions.resolve_scope_review(review["atom_id"], "expired")
                     continue
+                if atom.id in self.graph.superseded_ids([atom.id]):
+                    # edited since it was queued: ask about the current version
+                    head_id = self._supersedes_head(atom.id)
+                    moved = head_id != atom.id and self._carry_review(atom.id, head_id)
+                    head_review = next((r for r in reviews_fn("pending") if r["atom_id"] == head_id), None)
+                    if not moved or head_review is None:
+                        continue
+                    atom, review = self.graph.get_atom(head_id), head_review
+                    if atom is None:
+                        continue
                 if session_key is not None:
                     if session_key in review["shown_sessions"]:
                         continue
@@ -703,7 +848,7 @@ class Memory:
                 out.append(
                     {
                         "id": atom.id, "content": atom.content, "category": atom.category.value,
-                        "scopes": list(atom.scopes), "kind": review["kind"],
+                        "scopes": list(atom.scopes), "tags": list(atom.tags), "kind": review["kind"],
                         "reason": review["reason"], "candidates": review["candidates"],
                     }
                 )
@@ -733,8 +878,7 @@ class Memory:
         self.sessions.log_provenance(atom.id, "scope", f"confirmed by user: {_fmt_scopes(atom.scopes)}")
         if kind == "unverified_global" and atom.provenance == Provenance.inferred:
             atom = atom.model_copy(update={"provenance": Provenance.validated, "updated_at": datetime.now(UTC)})
-            vector = self.vectors.get_vector(atom.id)
-            self.vectors.upsert(atom, vector if vector is not None else self._embed(atom.content))
+            self.vectors.upsert(atom, self._vector_for(atom, atom))
             self.graph.add_atom(atom)
             self.keyword.add(atom)
             self.sessions.log_provenance(atom.id, "validate", "user confirmed global scope")
@@ -826,8 +970,7 @@ class Memory:
                         "updated_at": now,
                     }
                 )
-                embedding = self._embed(updated.content)
-                self.vectors.upsert(updated, embedding)
+                self.vectors.upsert(updated, self._vector_for(updated, old))
                 self.graph.add_atom(updated)
                 self.keyword.add(updated)
                 self.sessions.log_provenance(updated.id, "update", "in-place edit")
@@ -844,6 +987,7 @@ class Memory:
                 source=old.source,
                 source_ref=old.source_ref,
                 agent=old.agent,
+                tags=old.tags,
             )
             self.graph.add_edge(
                 MemoryEdge(
@@ -852,7 +996,23 @@ class Memory:
                 )
             )
             self.sessions.log_provenance(new_atom.id, "update", f"supersedes {old.id}")
+            self._carry_review(old.id, new_atom.id)
             return new_atom
+
+    def _carry_review(self, old_id: str, new_id: str) -> bool:
+        """A pending scope question follows a memory to its corrected
+        version (the superseded original no longer shows up anywhere the
+        user would answer it). Returns True if one was moved."""
+        reviews_fn = getattr(self.sessions, "scope_reviews", None)
+        if reviews_fn is None or old_id == new_id:
+            return False
+        review = next((r for r in reviews_fn("pending") if r["atom_id"] == old_id), None)
+        if review is None:
+            return False
+        self.sessions.resolve_scope_review(old_id, "superseded")
+        # no-op (False) if the new version already has a review — e.g. the
+        # user already decided its scope; that decision stands
+        return self.sessions.queue_scope_review(new_id, review["kind"], review["reason"], review["candidates"])
 
     # -- scoped read path -------------------------------------------------------
 
@@ -868,6 +1028,7 @@ class Memory:
         track: bool = True,
         min_relevance: float | None = None,
         scopes: list[str] | None = None,
+        tags: list[str] | None = None,
     ) -> list[dict]:
         """Hybrid (dense + keyword) scoped recall. Scope is a hard filter:
         a scoped query sees its own scope PLUS globals; an unscoped query
@@ -894,7 +1055,7 @@ class Memory:
             now = datetime.now(UTC)
             q = ScopedQuery(
                 text=query, session_id=session_id, scopes=_query_scopes(task_id, scopes),
-                host=host, categories=categories, limit=limit,
+                host=host, categories=categories, limit=limit, tags=normalize_tags(tags or []),
             )
             candidate_limit = max(limit * 3, limit)
             query_embedding = self._embed(query)
@@ -916,10 +1077,13 @@ class Memory:
             atoms = self.graph.get_atoms(candidate_ids)
             superseded = self.graph.superseded_ids(candidate_ids)
 
+            wanted_tags = set(q.tags)
             working_ids = [
                 aid
                 for aid in candidate_ids
                 if aid in atoms and (include_superseded or aid not in superseded)
+                # exact tag filter (the keyword index only knows tag words)
+                and (not wanted_tags or wanted_tags & set(atoms[aid].tags))
             ]
             if not working_ids:
                 return []
@@ -1002,6 +1166,7 @@ class Memory:
                         "confidence": atom.confidence,
                         "task_id": atom.task_id,
                         "scopes": list(atom.scopes),
+                        "tags": list(atom.tags),
                         "host": atom.host,
                         "source": atom.source,
                         "source_ref": atom.source_ref,
@@ -1083,11 +1248,13 @@ class Memory:
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> list[dict]:
         with self._lock:
             cat_value = category.value if isinstance(category, Category) else category
             atoms = self.graph.list_atoms(
-                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent
+                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent,
+                **({"tag": tag} if tag else {}),
             )
             if not atoms:
                 return []
@@ -1102,6 +1269,7 @@ class Memory:
         limit: int = 100,
         offset: int = 0,
         agent: str | None = None,
+        tag: str | None = None,
     ) -> tuple[list[dict], int]:
         """Same filtering/pagination as `list()`, plus the total count of
         atoms matching the filter (not just this page) — for a caller
@@ -1109,10 +1277,12 @@ class Memory:
         "page N of M" / "X total" without a separate unpaginated call."""
         with self._lock:
             cat_value = category.value if isinstance(category, Category) else category
+            extra = {"tag": tag} if tag else {}
             atoms = self.graph.list_atoms(
-                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent
+                category=cat_value, task_id=task_id, host=host, limit=limit, offset=offset, agent=agent,
+                **extra,
             )
-            total = self.graph.count_atoms(category=cat_value, task_id=task_id, host=host, agent=agent)
+            total = self.graph.count_atoms(category=cat_value, task_id=task_id, host=host, agent=agent, **extra)
             if not atoms:
                 return [], total
             superseded = self.graph.superseded_ids([a.id for a in atoms])
@@ -1151,6 +1321,7 @@ class Memory:
             "session_id": atom.session_id,
             "task_id": atom.task_id,
             "scopes": list(atom.scopes),
+            "tags": list(atom.tags),
             "host": atom.host,
             "agent": atom.agent,
             "source": atom.source,
