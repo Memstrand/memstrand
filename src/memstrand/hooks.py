@@ -363,13 +363,14 @@ def _log_session_turns(
     task_id: str | None,
     turns: list[tuple[str, str, list[str]]],
     stamps: list[float | None] | None = None,
+    agent_kind: str = "claude-code",
 ) -> None:
     if not turns:
         return
     stamps = stamps if stamps is not None else [None] * len(turns)
     from .scopes import agent_name
 
-    agent = agent_name("claude-code")
+    agent = agent_name(agent_kind)
     log_many = getattr(mem, "log_turns", None)
     if callable(log_many):
         log_many(
@@ -538,7 +539,7 @@ def backfill_transcript(
 
 
 def claude_code_context_hook(
-    stdin_json: dict, mem, task_from: str = "cwd", limit: int = 8
+    stdin_json: dict, mem, task_from: str = "cwd", limit: int = 8, agent: str = "claude-code"
 ) -> str:
     """Returns the context block for the CLI to print to stdout. `""` on
     any failure or when there's nothing to say — this hook must stay fast
@@ -561,7 +562,7 @@ def claude_code_context_hook(
         if extra and not _accepts_kwarg(mem.context, "scopes"):
             extra = {}
         context = mem.context(query, task_id=task_id, limit=limit, **extra) or ""
-        review = _scope_review_block(mem, stdin_json.get("session_id"))
+        review = _scope_review_block(mem, stdin_json.get("session_id"), agent)
         return "\n\n".join(part for part in (review, context) if part)
     except Exception as exc:  # noqa: BLE001 - a hook must never fail the user's session
         log_error(f"claude_code_context_hook: {exc}")
@@ -620,11 +621,11 @@ def _quote_memory(text: str, max_len: int = 200) -> str:
     return json.dumps(flat, ensure_ascii=False)
 
 
-def _scope_review_block(mem, session_id: str | None) -> str:
+def _scope_review_block(mem, session_id: str | None, agent: str = "claude-code") -> str:
     pending_fn = getattr(mem, "pending_scope_reviews", None)
     if pending_fn is None or not session_id:
         return ""
-    reviews = pending_fn(limit=SCOPE_REVIEWS_PER_PROMPT, session_key=f"claude-code:{session_id}")
+    reviews = pending_fn(limit=SCOPE_REVIEWS_PER_PROMPT, session_key=f"{agent}:{session_id}")
     if not reviews:
         return ""
     from .scopes import short_name
@@ -645,6 +646,91 @@ def _scope_review_block(mem, session_id: str | None) -> str:
             f" · other repos: `{cmd} scope {r['id']} --set <repo> [--set <repo>]`"
         )
     return "\n".join(lines)
+
+
+# -- Hermes Agent ----------------------------------------------------------------
+#
+# Hermes shell hooks (`hooks:` in ~/.hermes/config.yaml) pipe a JSON payload
+# to stdin — `hook_event_name`, `session_id`, `cwd`, and event-specific
+# kwargs under `extra` — and read optional JSON from stdout. Unlike Claude
+# Code there is no transcript file: `post_llm_call` hands over each finished
+# turn directly, so logging needs no per-session cursor.
+
+
+def _hermes_text(content) -> str:
+    """Plain text of a Hermes message body: a string, or (multimodal turns)
+    a list of OpenAI-style content parts — only the text parts are kept."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+        return "\n".join(t for t in parts if isinstance(t, str) and t).strip()
+    return ""
+
+
+def hermes_hook(payload: dict, mem, task_from: str = "cwd", improve: bool = True) -> dict:
+    """`post_llm_call` body: log the finished turn (user message + final
+    assistant reply) and kick off a background `improve()`. Never raises."""
+    try:
+        extra = payload.get("extra") or {}
+        session_id = payload.get("session_id")
+        if not session_id:
+            return {"logged": 0}
+        turns = [
+            (role, text, [])
+            for role, text in (
+                ("user", _hermes_text(extra.get("user_message"))),
+                ("assistant", _hermes_text(extra.get("assistant_response"))),
+            )
+            if text
+        ]
+        if not turns:
+            return {"logged": 0}
+        task_id = _resolve_task_id(task_from, payload.get("cwd") or ".")
+        mem_session_id = f"hermes:{session_id}"
+        _log_session_turns(mem, mem_session_id, task_id, turns, agent_kind="hermes")
+        if improve:
+            mem.improve([mem_session_id], background=True)
+        return {"logged": len(turns), "session_id": mem_session_id, "task_id": task_id}
+    except Exception as exc:  # noqa: BLE001 - a hook must never fail the user's session
+        log_error(f"hermes_hook: {exc}")
+        return {"error": str(exc)}
+
+
+def hermes_context_hook(payload: dict, mem, task_from: str = "cwd", limit: int = 8) -> str:
+    """`pre_llm_call` body: the memory context block, or `""`. The CLI wraps
+    it as `{"context": ...}`, which Hermes appends to the turn's user message."""
+    extra = payload.get("extra") or {}
+    return claude_code_context_hook(
+        {
+            "prompt": _hermes_text(extra.get("user_message")) or None,
+            "cwd": payload.get("cwd"),
+            "session_id": payload.get("session_id"),
+        },
+        mem,
+        task_from=task_from,
+        limit=limit,
+        agent="hermes",
+    )
+
+
+HERMES_CONFIG_SNIPPET = """\
+# merge into ~/.hermes/config.yaml
+mcp_servers:
+  memstrand:
+    url: "http://127.0.0.1:7777/mcp"
+    # headers:
+    #   Authorization: "Bearer ${MEMSTRAND_TOKEN}"
+
+hooks:
+  pre_llm_call:
+    - command: "memstrand hook hermes-context"
+  post_llm_call:
+    - command: "memstrand hook hermes"
+"""
+"""Printed by `memstrand hook print-config --agent hermes`. Hermes asks for
+consent the first time it sees each (event, command) pair — approve it, or
+pass `--accept-hooks` / set `hooks_auto_accept: true`."""
 
 
 # -- settings.json snippet ---------------------------------------------------------

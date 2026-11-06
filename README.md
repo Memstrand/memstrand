@@ -144,7 +144,7 @@ FSRS/Hebbian dynamics, in [docs/architecture.md](https://github.com/memstrand/me
 - [docs/architecture.md](https://github.com/memstrand/memstrand/blob/master/docs/architecture.md) — stores, write/distill/read/consolidate paths, ranking formula
 - [docs/python-api.md](https://github.com/memstrand/memstrand/blob/master/docs/python-api.md) — the full `Memory` method surface
 - [docs/cli.md](https://github.com/memstrand/memstrand/blob/master/docs/cli.md) — every CLI command/flag, plus REST/MCP reference and security notes
-- [docs/integrations.md](https://github.com/memstrand/memstrand/blob/master/docs/integrations.md) — Ollama/llama.cpp/LM Studio, Claude Code, Cursor, Open WebUI, autostart, backups, Obsidian
+- [docs/integrations.md](https://github.com/memstrand/memstrand/blob/master/docs/integrations.md) — Ollama/llama.cpp/LM Studio, Claude Code, Hermes, Cursor, Open WebUI, autostart, backups, Obsidian
 
 ## Acceptance test
 

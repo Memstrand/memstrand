@@ -280,3 +280,68 @@ def test_claude_code_settings_snippet_is_valid_json_with_expected_shape():
         for matcher_block in event_hooks:
             for h in matcher_block["hooks"]:
                 assert h["type"] == "command"
+
+
+# -- Hermes --------------------------------------------------------------------------
+
+
+def _hermes_payload(**extra):
+    return {
+        "hook_event_name": "post_llm_call",
+        "session_id": "sess_1",
+        "cwd": "/tmp",
+        "extra": {"user_message": "I prefer tabs", "assistant_response": "Noted.", **extra},
+    }
+
+
+def test_hermes_hook_logs_turn_and_improves():
+    mem = BatchMem()
+    report = hooks.hermes_hook(_hermes_payload(), mem, task_from="none")
+    assert report["logged"] == 2 and report["session_id"] == "hermes:sess_1"
+    (batch,) = mem.batches
+    assert [(t["role"], t["content"]) for t in batch] == [("user", "I prefer tabs"), ("assistant", "Noted.")]
+    assert batch[0]["agent"] == agent_name("hermes")
+    assert mem.improve_calls == [(["hermes:sess_1"], True)]
+
+
+def test_hermes_hook_multimodal_keeps_text_parts_only():
+    mem = BatchMem()
+    parts = [{"type": "text", "text": "what is this?"}, {"type": "image_url", "image_url": {"url": "x"}}]
+    hooks.hermes_hook(_hermes_payload(user_message=parts), mem, task_from="none", improve=False)
+    assert mem.batches[0][0]["content"] == "what is this?"
+    assert mem.improve_calls == []
+
+
+def test_hermes_hook_without_session_or_text_is_noop():
+    mem = BatchMem()
+    assert hooks.hermes_hook({"extra": {}}, mem) == {"logged": 0}
+    assert hooks.hermes_hook(_hermes_payload(user_message="", assistant_response=""), mem) == {"logged": 0}
+    assert mem.batches == []
+
+
+def test_hermes_hook_never_raises():
+    assert "error" in hooks.hermes_hook(_hermes_payload(), BrokenMem(), task_from="none")
+
+
+def test_hermes_context_hook_uses_user_message_as_query():
+    out = hooks.hermes_context_hook(_hermes_payload(), FakeMem(), task_from="none", limit=3)
+    assert out == "ctx:I prefer tabs:None:3"
+
+
+def test_hermes_config_snippet_is_valid_yaml_with_both_hooks():
+    import yaml
+
+    cfg = yaml.safe_load(hooks.HERMES_CONFIG_SNIPPET)
+    assert cfg["mcp_servers"]["memstrand"]["url"].endswith("/mcp")
+    assert cfg["hooks"]["pre_llm_call"][0]["command"] == "memstrand hook hermes-context"
+    assert cfg["hooks"]["post_llm_call"][0]["command"] == "memstrand hook hermes"
+
+
+def test_install_skill_copies_and_refuses_overwrite(tmp_path, capsys):
+    from memstrand.cli import main
+
+    dest = tmp_path / "skills" / "memstrand"
+    assert main(["hook", "install-skill", "--dest", str(dest)]) == 0
+    assert (dest / "SKILL.md").read_text().startswith("---\nname: memstrand\n")
+    assert main(["hook", "install-skill", "--dest", str(dest)]) == 1
+    assert main(["hook", "install-skill", "--dest", str(dest), "--force"]) == 0

@@ -34,7 +34,7 @@
 | `stats` | atom/edge/session counts, by category and task |
 | `usage` | LLM tokens used by distillation/answers, by day, purpose, session, or model |
 | `config` | effective configuration |
-| `hook claude-code` / `hook claude-code-context` / `hook print-config` | Claude Code integration |
+| `hook claude-code` / `hook claude-code-context` / `hook hermes` / `hook hermes-context` / `hook print-config` / `hook install-skill` | Claude Code and Hermes integration |
 | `hook backfill [paths…]` | distill existing Claude Code transcripts from disk |
 
 Every data-touching command talks to a running daemon if one is up,
@@ -128,7 +128,13 @@ typed so the MCP SDK rejects an invalid value before the tool runs.
   `--json`. Reads `{MEMSTRAND_HOME}/llm_usage.jsonl`, where every LLM call
   records the token usage the endpoint reported, tagged by purpose
   (`extract`, `trust`, `judge`, `answer`, `ping`) and session.
-- `hook print-config`: prints the Claude Code `settings.json` hooks snippet
+- `hook hermes` / `hook hermes-context`: Hermes `post_llm_call` / `pre_llm_call`
+  shell-hook bodies; same `--task-from` / `--no-improve` / `--limit` flags.
+  `hermes-context` prints `{"context": "..."}` JSON, as Hermes expects.
+- `hook print-config [--agent {claude-code,hermes}]`: prints the Claude Code
+  `settings.json` hooks snippet (default) or the Hermes `config.yaml` snippet
+- `hook install-skill`: copies the bundled Hermes `SKILL.md` to
+  `~/.hermes/skills/memstrand/` (`$HERMES_HOME`, or `--dest`); `--force` overwrites
 
 ## REST / MCP reference
 

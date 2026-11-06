@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Hermes Agent support.** `memstrand hook hermes` (`post_llm_call`) and
+  `hook hermes-context` (`pre_llm_call`, emits `{"context": ...}`),
+  `hook print-config --agent hermes` (MCP server + hooks for
+  `~/.hermes/config.yaml`), and `hook install-skill` (bundled Hermes
+  `SKILL.md`). See docs/integrations.md.
+
 ## [0.3.0] — 2026-10-22
 
 ### Added (tags, review UI)

@@ -759,7 +759,16 @@ def _cmd_config(args) -> int:
 
 
 def _cmd_hook_claude_code(args) -> int:
-    """Stop/SessionEnd/PreCompact body. Must exit 0 and print nothing no
+    return _run_log_hook(args, "claude-code")
+
+
+def _cmd_hook_hermes(args) -> int:
+    return _run_log_hook(args, "hermes")
+
+
+def _run_log_hook(args, agent: str) -> int:
+    """Stop/SessionEnd/PreCompact (Claude Code) or post_llm_call (Hermes)
+    body. Must exit 0 and print nothing no
     matter what — even `get_memory()` failing must not surface here.
 
     Probes the daemon before doing anything else: if it's up but rejects
@@ -781,9 +790,10 @@ def _cmd_hook_claude_code(args) -> int:
     try:
         stdin_json = _read_stdin_json()
         mem = get_memory()
-        hooks.claude_code_hook(stdin_json, mem, task_from=args.task_from, improve=not args.no_improve)
+        fn = hooks.hermes_hook if agent == "hermes" else hooks.claude_code_hook
+        fn(stdin_json, mem, task_from=args.task_from, improve=not args.no_improve)
     except Exception as exc:  # noqa: BLE001 - a hook must never fail the user's session
-        hooks.log_error(f"cli hook claude-code: {exc}")
+        hooks.log_error(f"cli hook {agent}: {exc}")
     finally:
         if mem is not None:
             try:
@@ -794,7 +804,16 @@ def _cmd_hook_claude_code(args) -> int:
 
 
 def _cmd_hook_claude_code_context(args) -> int:
-    """UserPromptSubmit/SessionStart body. Only ever queries memory when
+    return _run_context_hook(args, "claude-code")
+
+
+def _cmd_hook_hermes_context(args) -> int:
+    return _run_context_hook(args, "hermes")
+
+
+def _run_context_hook(args, agent: str) -> int:
+    """UserPromptSubmit/SessionStart (Claude Code) or pre_llm_call (Hermes,
+    which expects `{"context": ...}` JSON on stdout) body. Only ever queries memory when
     the daemon is already up (see hooks.py docstring) so a cold local
     `Memory()` (fastembed load, disk stores) never blocks a user prompt."""
     from . import hooks
@@ -806,11 +825,10 @@ def _cmd_hook_claude_code_context(args) -> int:
         if probe_daemon(settings.server_url) == "up":
             stdin_json = _read_stdin_json()
             mem = get_memory()
-            ctx = hooks.claude_code_context_hook(
-                stdin_json, mem, task_from=args.task_from, limit=args.limit
-            )
+            fn = hooks.hermes_context_hook if agent == "hermes" else hooks.claude_code_context_hook
+            ctx = fn(stdin_json, mem, task_from=args.task_from, limit=args.limit)
     except Exception as exc:  # noqa: BLE001 - a hook must never fail the user's session
-        hooks.log_error(f"cli hook claude-code-context: {exc}")
+        hooks.log_error(f"cli hook {agent}-context: {exc}")
     finally:
         if mem is not None:
             try:
@@ -818,7 +836,7 @@ def _cmd_hook_claude_code_context(args) -> int:
             except Exception:  # noqa: BLE001, S110
                 pass
     if ctx:
-        print(ctx)
+        print(json.dumps({"context": ctx}) if agent == "hermes" else ctx)
     return 0
 
 
@@ -950,9 +968,30 @@ def _cmd_usage(args) -> int:
 
 
 def _cmd_hook_print_config(args) -> int:
-    from .hooks import CLAUDE_CODE_SETTINGS_SNIPPET
+    from .hooks import CLAUDE_CODE_SETTINGS_SNIPPET, HERMES_CONFIG_SNIPPET
 
-    print(CLAUDE_CODE_SETTINGS_SNIPPET)
+    print(HERMES_CONFIG_SNIPPET if args.agent == "hermes" else CLAUDE_CODE_SETTINGS_SNIPPET, end="")
+    if args.agent != "hermes":
+        print()
+    return 0
+
+
+def _cmd_hook_install_skill(args) -> int:
+    """Copy the bundled Hermes skill (`skills/hermes/SKILL.md`) into
+    `~/.hermes/skills/memstrand/` (or `$HERMES_HOME`, or `--dest`)."""
+    import shutil
+    from importlib import resources
+
+    home = Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser()
+    dest = Path(args.dest).expanduser() if args.dest else home / "skills" / "memstrand"
+    target = dest / "SKILL.md"
+    if target.exists() and not args.force:
+        print(f"{target} already exists (use --force to overwrite)", file=sys.stderr)
+        return 1
+    dest.mkdir(parents=True, exist_ok=True)
+    with resources.as_file(resources.files("memstrand") / "skills" / "hermes" / "SKILL.md") as src:
+        shutil.copyfile(src, target)
+    print(f"installed {target}")
     return 0
 
 
@@ -1178,7 +1217,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="show effective configuration")
     p.set_defaults(func=_cmd_config)
 
-    p = sub.add_parser("hook", help="Claude Code integration hooks")
+    p = sub.add_parser("hook", help="Claude Code / Hermes integration hooks")
     hook_sub = p.add_subparsers(dest="hook_cmd", required=True)
 
     hp = hook_sub.add_parser("claude-code", help="Stop/SessionEnd/PreCompact hook body")
@@ -1193,6 +1232,21 @@ def _build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
     hp.add_argument("--limit", type=int, default=8)
     hp.set_defaults(func=_cmd_hook_claude_code_context)
+
+    hp = hook_sub.add_parser("hermes", help="Hermes post_llm_call hook body (logs the finished turn)")
+    hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
+    hp.add_argument("--no-improve", action="store_true")
+    hp.set_defaults(func=_cmd_hook_hermes)
+
+    hp = hook_sub.add_parser("hermes-context", help="Hermes pre_llm_call hook body (prints {\"context\": ...})")
+    hp.add_argument("--task-from", default="auto", choices=["auto", "cwd", "none", "env"])
+    hp.add_argument("--limit", type=int, default=8)
+    hp.set_defaults(func=_cmd_hook_hermes_context)
+
+    hp = hook_sub.add_parser("install-skill", help="install the memstrand skill for Hermes")
+    hp.add_argument("--dest", default=None, help="skill directory (default: ~/.hermes/skills/memstrand)")
+    hp.add_argument("--force", action="store_true", help="overwrite an existing SKILL.md")
+    hp.set_defaults(func=_cmd_hook_install_skill)
 
     hp = hook_sub.add_parser(
         "backfill", help="distill existing Claude Code transcripts from disk (resumable, chunked)"
@@ -1214,7 +1268,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hp.add_argument("--timeout", type=float, default=900.0, help="per-request timeout against the daemon (s)")
     hp.set_defaults(func=_cmd_hook_backfill)
 
-    hp = hook_sub.add_parser("print-config", help="print the Claude Code settings.json hooks snippet")
+    hp = hook_sub.add_parser("print-config", help="print the hooks config snippet (Claude Code or Hermes)")
+    hp.add_argument("--agent", default="claude-code", choices=["claude-code", "hermes"])
     hp.set_defaults(func=_cmd_hook_print_config)
 
     return parser

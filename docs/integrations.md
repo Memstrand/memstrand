@@ -228,6 +228,58 @@ isn't normally visible in Claude Code's UI.
 
 ---
 
+## Hermes Agent
+
+[Hermes Agent](https://hermes-agent.nousresearch.com) (Nous Research) gets
+the same three integrations as Claude Code. Print the config and merge it
+into `~/.hermes/config.yaml`:
+
+```bash
+memstrand hook print-config --agent hermes
+```
+
+```yaml
+mcp_servers:
+  memstrand:
+    url: "http://127.0.0.1:7777/mcp"
+    # headers:
+    #   Authorization: "Bearer ${MEMSTRAND_TOKEN}"
+
+hooks:
+  pre_llm_call:
+    - command: "memstrand hook hermes-context"
+  post_llm_call:
+    - command: "memstrand hook hermes"
+```
+
+- **MCP** — Hermes registers the tools as `mcp_memstrand_<tool>`
+  (`mcp_memstrand_recall`, `mcp_memstrand_remember`, ...). If `MEMSTRAND_TOKEN`
+  is set, send it as the `Authorization` header shown above (Hermes
+  substitutes `${VAR}` from the environment and `~/.hermes/.env`).
+- **Hooks** — `pre_llm_call` -> `memstrand hook hermes-context` injects the
+  same memory context block (and scope checks) as the Claude Code hook, via
+  `{"context": ...}`, which Hermes appends to the turn's user message. Like
+  the Claude Code context hook it only queries memory when the daemon is
+  already running. `post_llm_call` -> `memstrand hook hermes` logs each
+  finished turn (user message + final reply) as session `hermes:<id>`,
+  written by agent `hermes@<host>`, and starts a background `improve()`.
+  Memories are scoped by the cwd's git remote URL, same as Claude Code.
+  Unlike Claude Code there is no transcript file, so touched-repo
+  attribution (filing facts under other repos the session read or edited)
+  isn't available.
+  Hermes asks you to approve each hook command the first time it sees it
+  (`hermes hooks list` shows consent status); pass `--accept-hooks` or set
+  `hooks_auto_accept: true` for non-interactive use. If `memstrand` isn't on
+  Hermes's `PATH`, use the absolute path to the binary in `command`.
+- **Skill** — `memstrand hook install-skill` copies a `SKILL.md` to
+  `~/.hermes/skills/memstrand/` that tells the agent when to recall,
+  remember, correct, or forget (and how to answer scope checks).
+
+Backfilling existing Hermes sessions isn't supported yet — `hook backfill`
+reads Claude Code transcripts only.
+
+---
+
 ## Cursor
 
 Add an MCP server pointing at the daemon's `/mcp` endpoint. In Cursor's
