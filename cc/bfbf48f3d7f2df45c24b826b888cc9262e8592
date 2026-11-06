@@ -1,0 +1,35 @@
+README.md
+  s_5df7bd5418408c::t_8826a765026c28 147
+src/memstrand/skills/hermes/SKILL.md
+  s_5df7bd5418408c::t_5a576a1c39cfc8 1-38
+docs/cli.md
+  s_5df7bd5418408c::t_8826a765026c28 37,131-137
+src/memstrand/cli.py
+  s_5df7bd5418408c::t_7839155cb1486f 762-771,793-794,796,807-816,828-829,831,839,971-983,985-994,1220,1236-1250,1271-1272
+tests/test_hooks.py
+  s_5df7bd5418408c::t_5a576a1c39cfc8 283-347
+CHANGELOG.md
+  s_5df7bd5418408c::t_8826a765026c28 7-16
+src/memstrand/hooks.py
+  s_5df7bd5418408c::t_1e9b1eca537ced 366,373,542,565,624,628,651-733
+  s_5df7bd5418408c::t_cba5d89b7af8fa 734-735
+docs/integrations.md
+  s_5df7bd5418408c::t_8826a765026c28 231-265,267,270-282
+  s_5df7bd5418408c::t_ccc04f5c55cc2c 266,268-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "ccbfbf48f3d7f2df45c24b826b888cc9262e8592",
+  "prompts": {},
+  "sessions": {
+    "s_5df7bd5418408c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8026487e-37c9-4948-b24e-0af9a65cdcb4",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "Chiran <ckunaparaju@paloaltonetworks.com>"
+    }
+  }
+}
